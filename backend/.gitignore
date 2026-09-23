@@ -1,0 +1,5 @@
+.env
+.env.local
+.dev-secrets.ps1
+.gocache/
+*.log

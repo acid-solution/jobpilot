@@ -64,6 +64,14 @@ type Credentials interface {
 type VectorSearch interface {
 	SearchSources(context.Context, uuid.UUID, uuid.UUID, []float32, int) ([]SourceMatch, error)
 }
+
+// ActionTransactions keeps the lock, snapshot validation, business changes and
+// action receipt in one database transaction. A savepoint isolates a rejected
+// business operation so its failure receipt can still be committed.
+type ActionTransactions interface {
+	WithinUserTransaction(context.Context, uuid.UUID, func(context.Context) error) error
+	WithinSavepoint(context.Context, func(context.Context) error) error
+}
 type SourceMatch struct {
 	SourceType string    `json:"source_type"`
 	SourceID   uuid.UUID `json:"source_id"`
@@ -76,6 +84,7 @@ type Service struct {
 	Repo             Repository
 	Checkpoints      CheckpointStore
 	MutationLocker   mutationlock.Locker
+	Transactions     ActionTransactions
 	Targets          TargetService
 	Market           MarketService
 	Profile          ProfileService

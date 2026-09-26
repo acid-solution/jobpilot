@@ -156,63 +156,76 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 
 // Called only by the resumed write tool after an explicit user approval.
 func (s *Service) executeApprovedAction(ctx context.Context, user, conversationID uuid.UUID, a Action, emit func(Event)) error {
-	// Direct page mutations use the same account lock in the HTTP middleware.
-	// Hold it from the version read through the business write and action receipt.
-	if s.MutationLocker != nil {
-		release, err := s.MutationLocker.Lock(ctx, user)
+	if s.Transactions == nil {
+		return errors.New("Agent action transactions are not configured")
+	}
+	var outcome Event
+	var outcomeErr error
+	err := s.Transactions.WithinUserTransaction(ctx, user, func(txCtx context.Context) error {
+		// The transaction holds the same account advisory lock used by page and
+		// worker mutations. Every repository call below reuses its connection.
+		stale := func() error {
+			if err := s.Repo.StaleAction(txCtx, a.ID); err != nil {
+				return err
+			}
+			outcome = Event{Type: "error", Code: "action_stale", Text: "相关资料已变化，请重新提出操作。"}
+			outcomeErr = ErrStale
+			// Commit the stale receipt before reporting ErrStale to Eino.
+			return nil
+		}
+		keys := make([]string, 0, len(a.ExpectedVersions))
+		for key := range a.ExpectedVersions {
+			keys = append(keys, key)
+		}
+		versions, err := s.Repo.ReadResourceVersions(txCtx, user, keys)
 		if err != nil {
 			return err
 		}
-		defer release()
-	}
-	keys := make([]string, 0, len(a.ExpectedVersions))
-	for key := range a.ExpectedVersions {
-		keys = append(keys, key)
-	}
-	versions, err := s.Repo.ReadResourceVersions(ctx, user, keys)
-	if err != nil {
-		return err
-	}
-	// Check revisions before reading the object: a deleted resource is stale,
-	// rather than a missing-object error leaving the action permanently pending.
-	if len(a.ExpectedVersions) == 0 || !maps.Equal(versions, a.ExpectedVersions) {
-		return s.rejectStaleAction(ctx, a.ID, emit)
-	}
-	current, err := s.snapshot(ctx, user, a.Kind, a.Arguments)
-	if err != nil {
-		return err
-	}
-	if len(a.ExpectedVersions) == 0 || current.Hash != a.ExpectedHash || !maps.Equal(current.Versions, a.ExpectedVersions) {
-		return s.rejectStaleAction(ctx, a.ID, emit)
-	}
-	claimed, err := s.Repo.ClaimAction(ctx, a.ID, conversationID)
-	if err != nil {
-		return err
-	}
-	if !claimed {
-		return ErrActionClosed
-	}
-	value, err := s.execute(ctx, user, a.Kind, a.Arguments)
-	if err != nil {
-		if finishErr := s.Repo.FinishAction(context.WithoutCancel(ctx), a.ID, "failed", nil, "business_operation_failed"); finishErr != nil {
-			return finishErr
+		// A deleted resource is stale, rather than a missing-object error that
+		// leaves the action pending forever.
+		if len(a.ExpectedVersions) == 0 || !maps.Equal(versions, a.ExpectedVersions) {
+			return stale()
 		}
-		emit(Event{Type: "error", Code: "business_operation_failed", Text: err.Error()})
+		current, err := s.snapshot(txCtx, user, a.Kind, a.Arguments)
+		if err != nil {
+			return err
+		}
+		if current.Hash != a.ExpectedHash || !maps.Equal(current.Versions, a.ExpectedVersions) {
+			return stale()
+		}
+		claimed, err := s.Repo.ClaimAction(txCtx, a.ID, conversationID)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return ErrActionClosed
+		}
+		var value any
+		businessErr := s.Transactions.WithinSavepoint(txCtx, func(businessCtx context.Context) error {
+			var err error
+			value, err = s.execute(businessCtx, user, a.Kind, a.Arguments)
+			return err
+		})
+		if businessErr != nil {
+			if err := s.Repo.FinishAction(txCtx, a.ID, "failed", nil, "business_operation_failed"); err != nil {
+				return err
+			}
+			outcome = Event{Type: "error", Code: "business_operation_failed", Text: businessErr.Error()}
+			return nil
+		}
+		if err := s.Repo.FinishAction(txCtx, a.ID, "succeeded", marshal(value), ""); err != nil {
+			return err
+		}
+		outcome = Event{Type: "tool", Tool: a.Kind, Text: "已执行"}
 		return nil
-	}
-	if err := s.Repo.FinishAction(context.WithoutCancel(ctx), a.ID, "succeeded", marshal(value), ""); err != nil {
+	})
+	if err != nil {
+		// A receipt/commit failure rolls back the business change as well. Never
+		// tell the frontend or model it succeeded before the transaction commits.
 		return err
 	}
-	emit(Event{Type: "tool", Tool: a.Kind, Text: "已执行"})
-	return nil
-}
-
-func (s *Service) rejectStaleAction(ctx context.Context, id uuid.UUID, emit func(Event)) error {
-	if err := s.Repo.StaleAction(ctx, id); err != nil {
-		return err
-	}
-	emit(Event{Type: "error", Code: "action_stale", Text: "相关资料已变化，请重新提出操作。"})
-	return ErrStale
+	emit(outcome)
+	return outcomeErr
 }
 
 func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in readArgs, emit func(Event)) (string, error) {

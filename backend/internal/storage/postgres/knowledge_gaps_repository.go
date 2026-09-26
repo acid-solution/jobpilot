@@ -11,10 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
-type KnowledgeGapsRepository struct{ database *sql.DB }
+type KnowledgeGapsRepository struct{ database *repositoryDatabase }
 
 func NewKnowledgeGapsRepository(database *sql.DB) *KnowledgeGapsRepository {
-	return &KnowledgeGapsRepository{database}
+	return &KnowledgeGapsRepository{newRepositoryDatabase(database)}
 }
 
 func (r *KnowledgeGapsRepository) LoadRequirements(ctx context.Context, userID, targetID uuid.UUID) ([]knowledgegaps.Requirement, error) {

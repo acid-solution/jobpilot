@@ -11,11 +11,11 @@ import (
 )
 
 type ModelConfigRepository struct {
-	database *sql.DB
+	database *repositoryDatabase
 }
 
 func NewModelConfigRepository(database *sql.DB) *ModelConfigRepository {
-	return &ModelConfigRepository{database: database}
+	return &ModelConfigRepository{database: newRepositoryDatabase(database)}
 }
 
 func (r *ModelConfigRepository) Find(ctx context.Context, userID uuid.UUID, provider string) (modelconfig.StoredConfig, error) {

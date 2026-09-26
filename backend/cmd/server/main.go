@@ -158,6 +158,7 @@ func run() error {
 		agentService = &agent.Service{
 			Repo: agentRepository, Checkpoints: postgres.NewAgentCheckpointStore(database),
 			MutationLocker: mutationLocker,
+			Transactions:   agentRepository,
 			Targets:        targetService, Market: marketService, Profile: profileService,
 			Gaps: knowledgeGapsService, Projects: projectService, Credentials: modelConfigService,
 			Vectors:          embeddingRepository,

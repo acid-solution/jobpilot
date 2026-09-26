@@ -16,7 +16,7 @@ import (
 )
 
 type MarketRepository struct {
-	database *sql.DB
+	database *repositoryDatabase
 	quota    AbilityReviewQuotaLimits
 }
 
@@ -25,7 +25,7 @@ func NewMarketRepository(database *sql.DB, configured ...AbilityReviewQuotaLimit
 	if len(configured) > 0 {
 		quota = configured[0]
 	}
-	return &MarketRepository{database: database, quota: quota}
+	return &MarketRepository{database: newRepositoryDatabase(database), quota: quota}
 }
 
 func (r *MarketRepository) CreateWithAnalysisJob(
@@ -55,6 +55,9 @@ func (r *MarketRepository) CreateWithAnalysisJob(
 	if err != nil {
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				return market.JobDescription{}, errors.Join(err, rollbackErr)
+			}
 			return market.JobDescription{}, r.duplicateError(ctx, userID, targetID, rawTextHash, uuid.Nil)
 		}
 		return market.JobDescription{}, err
@@ -160,15 +163,22 @@ func (r *MarketRepository) ListByTarget(
 			return nil, err
 		}
 		result = append(result, item)
-		if err := r.loadAbilityReviewSummary(ctx, &result[len(result)-1]); err != nil {
-			return nil, err
-		}
-		if err := r.loadJDAbilityLevels(ctx, &result[len(result)-1]); err != nil {
-			return nil, err
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate job descriptions: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	// The Agent transaction uses one connection. Finish this result set before
+	// querying each JD's review and grading details on that connection.
+	for i := range result {
+		if err := r.loadAbilityReviewSummary(ctx, &result[i]); err != nil {
+			return nil, err
+		}
+		if err := r.loadJDAbilityLevels(ctx, &result[i]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -219,6 +229,9 @@ func (r *MarketRepository) UpdateRawText(ctx context.Context, userID, jdID uuid.
 	if err != nil {
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				return market.JobDescription{}, errors.Join(err, rollbackErr)
+			}
 			return market.JobDescription{}, r.duplicateError(ctx, userID, targetID, rawTextHash, jdID)
 		}
 		return market.JobDescription{}, fmt.Errorf("update jd text: %w", err)

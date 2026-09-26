@@ -15,10 +15,10 @@ import (
 	"github.com/google/uuid"
 )
 
-type EmbeddingRepository struct{ database *sql.DB }
+type EmbeddingRepository struct{ database *repositoryDatabase }
 
 func NewEmbeddingRepository(db *sql.DB) *EmbeddingRepository {
-	return &EmbeddingRepository{database: db}
+	return &EmbeddingRepository{database: newRepositoryDatabase(db)}
 }
 
 func (r *EmbeddingRepository) EmbeddingsReady(ctx context.Context) (bool, error) {

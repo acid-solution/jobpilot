@@ -87,7 +87,8 @@ func TestWriteToolExecutesOnlyAfterEinoResume(t *testing.T) {
 				_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", body)
 			}))
 			defer provider.Close()
-			service := &Service{Repo: repo, Targets: targets, Market: business, Credentials: confirmationCredentials{}, Checkpoints: checkpoints, DeepSeekBaseURL: provider.URL}
+			transactions := &confirmationTransactions{repo: repo, business: business}
+			service := &Service{Repo: repo, Transactions: transactions, Targets: targets, Market: business, Credentials: confirmationCredentials{}, Checkpoints: checkpoints, DeepSeekBaseURL: provider.URL}
 			var events []Event
 			emit := func(event Event) { events = append(events, event) }
 			if err := service.Send(ctx, user, conversation, "market", "保存这份 JD", emit); err != nil {
@@ -191,12 +192,14 @@ func (confirmationCredentials) Credentials(context.Context, uuid.UUID) (modelcon
 type confirmationMarket struct {
 	MarketService
 	writes              int
+	stored              int
 	resumedWithApproval bool
 	err                 error
 }
 
 func (s *confirmationMarket) Submit(ctx context.Context, _ uuid.UUID, text string) (market.JobDescription, error) {
 	s.writes++
+	s.stored++
 	interrupted, hasState, _ := tool.GetInterruptState[string](ctx)
 	isTarget, hasDecision, approved := tool.GetResumeContext[bool](ctx)
 	s.resumedWithApproval = interrupted && hasState && isTarget && hasDecision && approved
@@ -211,6 +214,7 @@ type confirmationRepository struct {
 	action       Action
 	claimLost    bool
 	version      int64
+	finishErr    error
 }
 
 func (r *confirmationRepository) Get(_ context.Context, user uuid.UUID, scope string, id uuid.UUID) (Conversation, error) {
@@ -286,6 +290,9 @@ func (r *confirmationRepository) ClaimAction(_ context.Context, id, conversation
 }
 
 func (r *confirmationRepository) FinishAction(_ context.Context, _ uuid.UUID, status string, _ json.RawMessage, _ string) error {
+	if r.finishErr != nil {
+		return r.finishErr
+	}
 	r.action.Status = status
 	return nil
 }
@@ -298,4 +305,88 @@ func (r *confirmationRepository) CancelAction(context.Context, uuid.UUID) error 
 func (r *confirmationRepository) StaleAction(context.Context, uuid.UUID) error {
 	r.action.Status = "stale"
 	return nil
+}
+
+type confirmationTransactionKey struct{}
+
+type confirmationTransactions struct {
+	repo      *confirmationRepository
+	business  *confirmationMarket
+	commitErr error
+	committed bool
+}
+
+func (t *confirmationTransactions) WithinUserTransaction(ctx context.Context, _ uuid.UUID, run func(context.Context) error) error {
+	action, stored := t.repo.action, t.business.stored
+	err := run(context.WithValue(ctx, confirmationTransactionKey{}, true))
+	if err == nil {
+		err = t.commitErr
+	}
+	if err != nil {
+		t.repo.action, t.business.stored = action, stored
+		return err
+	}
+	t.committed = true
+	return nil
+}
+
+func (t *confirmationTransactions) WithinSavepoint(ctx context.Context, run func(context.Context) error) error {
+	if ctx.Value(confirmationTransactionKey{}) != true {
+		return errors.New("business call escaped the action transaction")
+	}
+	stored := t.business.stored
+	if err := run(ctx); err != nil {
+		t.business.stored = stored
+		return err
+	}
+	return nil
+}
+
+func TestApprovedActionCommitsBusinessAndReceiptTogether(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		finishErr   error
+		commitErr   error
+		businessErr error
+		status      string
+		stored      int
+		wantErr     bool
+	}{
+		{name: "success", status: "succeeded", stored: 1},
+		{name: "receipt failure rolls back business", finishErr: errors.New("receipt unavailable"), status: "pending", wantErr: true},
+		{name: "commit failure never emits success", commitErr: errors.New("commit unavailable"), status: "pending", wantErr: true},
+		{name: "partial business failure only saves failed receipt", businessErr: errors.New("partial write rejected"), status: "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			user, conversation := uuid.New(), uuid.New()
+			repo := &confirmationRepository{finishErr: tc.finishErr}
+			business := &confirmationMarket{err: tc.businessErr}
+			tx := &confirmationTransactions{repo: repo, business: business, commitErr: tc.commitErr}
+			s := &Service{Repo: repo, Transactions: tx, Market: business, Targets: &confirmationTargets{value: target.Target{ID: uuid.New()}}}
+			args := json.RawMessage(`{"raw_text":"测试公司招聘 Go 后端，负责 API 开发，要求熟悉 Go。"}`)
+			snapshot, err := s.snapshot(ctx, user, "jd_add", args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo.action = Action{ID: uuid.New(), Kind: "jd_add", Arguments: args, ExpectedHash: snapshot.Hash, ExpectedVersions: snapshot.Versions, Status: "pending"}
+			repo.conversation.ID = conversation
+			var events []Event
+			err = s.executeApprovedAction(ctx, user, conversation, repo.action, func(event Event) {
+				if !tx.committed {
+					t.Fatal("outcome emitted before transaction committed")
+				}
+				events = append(events, event)
+			})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v", err)
+			}
+			if repo.action.Status != tc.status || business.stored != tc.stored {
+				t.Fatalf("action=%s persisted writes=%d", repo.action.Status, business.stored)
+			}
+			if tc.wantErr && len(events) != 0 {
+				t.Fatal("failed transaction reported a committed outcome")
+			}
+		})
+	}
 }

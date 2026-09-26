@@ -13,10 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
-type ProfileRepository struct{ database *sql.DB }
+type ProfileRepository struct{ database *repositoryDatabase }
 
 func NewProfileRepository(database *sql.DB) *ProfileRepository {
-	return &ProfileRepository{database: database}
+	return &ProfileRepository{database: newRepositoryDatabase(database)}
 }
 
 func (r *ProfileRepository) CreateMaterial(ctx context.Context, userID uuid.UUID, input profile.MaterialInput) (profile.Material, error) {
@@ -66,7 +66,7 @@ func (r *ProfileRepository) DeleteMaterial(ctx context.Context, userID, id uuid.
 	if count, _ := result.RowsAffected(); count == 0 {
 		return profile.ErrConflict
 	}
-	if err := refreshEvidenceLevels(ctx, tx, userID, abilities); err != nil {
+	if err := refreshEvidenceLevels(ctx, tx.Tx, userID, abilities); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -157,7 +157,7 @@ func (r *ProfileRepository) CompleteMaterialAnalysis(ctx context.Context, userID
 		}
 		affected = append(affected, draft.AbilityID)
 	}
-	if err = refreshEvidenceLevels(ctx, tx, userID, affected); err != nil {
+	if err = refreshEvidenceLevels(ctx, tx.Tx, userID, affected); err != nil {
 		return profile.Material{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE user_profile_materials SET status='ready',failure_reason='',updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='processing'`, id, userID); err != nil {

@@ -14,11 +14,11 @@ import (
 )
 
 type TargetRepository struct {
-	database *sql.DB
+	database *repositoryDatabase
 }
 
 func NewTargetRepository(database *sql.DB) *TargetRepository {
-	return &TargetRepository{database: database}
+	return &TargetRepository{database: newRepositoryDatabase(database)}
 }
 
 func (r *TargetRepository) FindCurrent(ctx context.Context, userID uuid.UUID) (target.Target, error) {
@@ -86,7 +86,7 @@ func (r *TargetRepository) UpsertCurrent(ctx context.Context, userID uuid.UUID, 
 	}
 	defer transaction.Rollback()
 
-	directions, title, err := resolveTargetDirections(ctx, transaction, input.Directions)
+	directions, title, err := resolveTargetDirections(ctx, transaction.Tx, input.Directions)
 	if err != nil {
 		return target.Target{}, err
 	}
@@ -126,7 +126,7 @@ func (r *TargetRepository) UpsertCurrent(ctx context.Context, userID uuid.UUID, 
 			return target.Target{}, fmt.Errorf("insert target direction: %w", err)
 		}
 	}
-	if err := reclassifyTargetJobDescriptions(ctx, transaction, current.ID, userID); err != nil {
+	if err := reclassifyTargetJobDescriptions(ctx, transaction.Tx, current.ID, userID); err != nil {
 		return target.Target{}, err
 	}
 	if err := transaction.Commit(); err != nil {

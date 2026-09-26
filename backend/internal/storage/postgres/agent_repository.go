@@ -11,9 +11,11 @@ import (
 	"github.com/google/uuid"
 )
 
-type AgentRepository struct{ db *sql.DB }
+type AgentRepository struct{ db *repositoryDatabase }
 
-func NewAgentRepository(db *sql.DB) *AgentRepository { return &AgentRepository{db: db} }
+func NewAgentRepository(db *sql.DB) *AgentRepository {
+	return &AgentRepository{db: newRepositoryDatabase(db)}
+}
 
 func (r *AgentRepository) RecoverRuns(ctx context.Context) error {
 	tx, err := r.db.BeginTx(ctx, nil)

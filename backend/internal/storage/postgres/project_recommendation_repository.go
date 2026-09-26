@@ -12,10 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-type ProjectRecommendationRepository struct{ database *sql.DB }
+type ProjectRecommendationRepository struct{ database *repositoryDatabase }
 
 func NewProjectRecommendationRepository(db *sql.DB) *ProjectRecommendationRepository {
-	return &ProjectRecommendationRepository{db}
+	return &ProjectRecommendationRepository{newRepositoryDatabase(db)}
 }
 
 func (r *ProjectRecommendationRepository) Get(ctx context.Context, userID uuid.UUID, signature string) (*projectrecs.Stored, *projectrecs.JobView, error) {
@@ -183,7 +183,7 @@ func (r *ProjectRecommendationRepository) Complete(ctx context.Context, job proj
 		return err
 	}
 	defer tx.Rollback()
-	if err := lockUserMutationTx(ctx, tx, job.UserID); err != nil {
+	if err := lockUserMutationTx(ctx, tx.Tx, job.UserID); err != nil {
 		return err
 	}
 	var active bool

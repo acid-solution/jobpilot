@@ -40,6 +40,7 @@ type PracticeMode string
 const (
 	ModeValidation PracticeMode = "validation"
 	ModeReview     PracticeMode = "review"
+	ModeInitial    PracticeMode = "initial"
 )
 
 type Material struct {
@@ -81,6 +82,9 @@ type Capability struct {
 	MarketLevel      int               `json:"market_level"`
 	MarketLevelReady bool              `json:"market_level_ready"`
 	CurrentLevel     int               `json:"current_level"`
+	Assessed         bool              `json:"assessed"`
+	LevelSource      string            `json:"level_source"`
+	ManualUpdatedAt  *time.Time        `json:"manual_updated_at,omitempty"`
 	EvidenceLevel    int               `json:"evidence_level"`
 	VerifiedLevel    int               `json:"verified_level"`
 	Status           string            `json:"status"`
@@ -95,6 +99,8 @@ type Overview struct {
 	ReadyMaterialCount int          `json:"ready_material_count"`
 	AssessedCount      int          `json:"assessed_count"`
 	PendingCount       int          `json:"pending_count"`
+	BlockingCount      int          `json:"blocking_count"`
+	Complete           bool         `json:"complete"`
 	Capabilities       []Capability `json:"capabilities"`
 }
 type Settings struct {
@@ -117,10 +123,13 @@ type EvidenceDraft struct {
 	Confidence float64   `json:"confidence"`
 }
 type Question struct {
-	ID        string `json:"id"`
-	Prompt    string `json:"prompt"`
-	Dimension string `json:"dimension"`
-	Position  int    `json:"position"`
+	ID          string `json:"id"`
+	Prompt      string `json:"prompt"`
+	Dimension   string `json:"dimension"`
+	Position    int    `json:"position"`
+	Hint        string `json:"hint,omitempty"`
+	Reference   string `json:"reference,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
 }
 type AnswerInput struct {
 	QuestionID string `json:"question_id"`
@@ -134,23 +143,27 @@ type QuestionResult struct {
 type Evaluation struct {
 	Passed          bool             `json:"passed"`
 	Score           float64          `json:"score"`
+	Verdict         string           `json:"verdict"`
+	SuggestedLevel  *int             `json:"suggested_level,omitempty"`
 	Summary         string           `json:"summary"`
 	QuestionResults []QuestionResult `json:"question_results"`
+	Followups       []Question       `json:"followup_questions,omitempty"`
 }
 type Session struct {
-	ID           uuid.UUID     `json:"id"`
-	AbilityID    uuid.UUID     `json:"concept_id"`
-	AbilityName  string        `json:"concept_name"`
-	Mode         PracticeMode  `json:"mode"`
-	BaseLevel    int           `json:"base_level"`
-	TargetLevel  int           `json:"target_level"`
-	Status       string        `json:"status"`
-	Questions    []Question    `json:"questions"`
-	Answers      []AnswerInput `json:"answers,omitempty"`
-	Evaluation   *Evaluation   `json:"evaluation,omitempty"`
-	LevelUpdated bool          `json:"level_updated"`
-	CreatedAt    time.Time     `json:"created_at"`
-	CompletedAt  *time.Time    `json:"completed_at,omitempty"`
+	ID                 uuid.UUID     `json:"id"`
+	AbilityID          uuid.UUID     `json:"concept_id"`
+	AbilityName        string        `json:"concept_name"`
+	Mode               PracticeMode  `json:"mode"`
+	BaseLevel          int           `json:"base_level"`
+	TargetLevel        int           `json:"target_level"`
+	Status             string        `json:"status"`
+	Questions          []Question    `json:"questions"`
+	Answers            []AnswerInput `json:"answers,omitempty"`
+	Evaluation         *Evaluation   `json:"evaluation,omitempty"`
+	LevelUpdated       bool          `json:"level_updated"`
+	ClarificationCount int           `json:"clarification_count"`
+	CreatedAt          time.Time     `json:"created_at"`
+	CompletedAt        *time.Time    `json:"completed_at,omitempty"`
 }
 type StartSessionInput struct {
 	AbilityID uuid.UUID    `json:"concept_id"`
@@ -170,9 +183,14 @@ type Repository interface {
 	GetSettings(context.Context, uuid.UUID) (Settings, error)
 	SaveSettings(context.Context, uuid.UUID, Settings) (Settings, error)
 	GetCapability(context.Context, uuid.UUID, uuid.UUID) (Capability, error)
+	SetCapabilityLevel(context.Context, uuid.UUID, uuid.UUID, int) (Capability, error)
 	CreateSession(context.Context, uuid.UUID, Session) (Session, error)
 	GetSession(context.Context, uuid.UUID, uuid.UUID) (Session, error)
+	ListSessions(context.Context, uuid.UUID) ([]Session, error)
+	SaveAnswer(context.Context, uuid.UUID, uuid.UUID, AnswerInput) (Session, error)
+	AddClarification(context.Context, uuid.UUID, uuid.UUID, []AnswerInput, []Question) (Session, error)
 	CompleteSession(context.Context, uuid.UUID, uuid.UUID, []AnswerInput, Evaluation) (Session, error)
+	ConfirmSession(context.Context, uuid.UUID, uuid.UUID) (Session, error)
 }
 type Assessor interface {
 	ExtractEvidence(context.Context, uuid.UUID, Material, []CapabilityInput) ([]EvidenceDraft, error)
@@ -211,6 +229,15 @@ func (s *Service) ListMaterials(ctx context.Context, userID uuid.UUID) ([]Materi
 }
 func (s *Service) GetOverview(ctx context.Context, userID uuid.UUID) (Overview, error) {
 	return s.repository.GetOverview(ctx, userID)
+}
+func (s *Service) SetCapabilityLevel(ctx context.Context, userID, abilityID uuid.UUID, level int) (Capability, error) {
+	if abilityID == uuid.Nil || level < 0 || level > 5 {
+		return Capability{}, ErrInvalidInput
+	}
+	if _, err := s.repository.GetCapability(ctx, userID, abilityID); err != nil {
+		return Capability{}, err
+	}
+	return s.repository.SetCapabilityLevel(ctx, userID, abilityID, level)
 }
 func (s *Service) GetSettings(ctx context.Context, userID uuid.UUID) (Settings, error) {
 	return s.repository.GetSettings(ctx, userID)
@@ -251,7 +278,7 @@ func (s *Service) ConfirmMaterial(ctx context.Context, userID, id uuid.UUID) (ma
 }
 
 func (s *Service) StartSession(ctx context.Context, userID uuid.UUID, input StartSessionInput) (Session, error) {
-	if input.AbilityID == uuid.Nil || (input.Mode != ModeValidation && input.Mode != ModeReview) {
+	if input.AbilityID == uuid.Nil || (input.Mode != ModeValidation && input.Mode != ModeReview && input.Mode != ModeInitial) {
 		return Session{}, fmt.Errorf("%w: concept_id and valid mode are required", ErrInvalidInput)
 	}
 	capability, err := s.repository.GetCapability(ctx, userID, input.AbilityID)
@@ -263,34 +290,88 @@ func (s *Service) StartSession(ctx context.Context, userID uuid.UUID, input Star
 	}
 	base, target := capability.CurrentLevel, capability.CurrentLevel
 	if input.Mode == ModeValidation {
-		if !capability.NeedsValidation {
-			return Session{}, fmt.Errorf("%w: 当前能力已经达到市场常见要求，无需继续验证", ErrPrecondition)
+		if !capability.Assessed {
+			return Session{}, fmt.Errorf("%w: 未评估能力请先完成初始评估或自行设置等级", ErrPrecondition)
 		}
 		target = base + 1
 		if target > 5 {
 			return Session{}, fmt.Errorf("%w: capability already reached L5", ErrPrecondition)
 		}
+	} else if input.Mode == ModeInitial {
+		if capability.Assessed {
+			return Session{}, fmt.Errorf("%w: 已有等级，无需初始评估", ErrPrecondition)
+		}
+		target = capability.MarketLevel
+		if target == 0 {
+			target = 1
+		}
 	} else if target == 0 {
 		target = 1
 	}
-	questions, err := s.assessor.GenerateQuestions(ctx, userID, capability, input.Mode, target, s.questionCount)
+	count := 6
+	if input.Mode == ModeInitial {
+		count = s.questionCount
+	}
+	questions, err := s.assessor.GenerateQuestions(ctx, userID, capability, input.Mode, target, count)
 	if err != nil {
 		return Session{}, err
 	}
-	if err := validateQuestions(questions, s.questionCount); err != nil {
+	if err := validateQuestions(questions, count); err != nil {
 		return Session{}, fmt.Errorf("model_invalid_response: %w", err)
+	}
+	for i := range questions {
+		if input.Mode == ModeReview {
+			if strings.TrimSpace(questions[i].Hint) == "" || strings.TrimSpace(questions[i].Reference) == "" || strings.TrimSpace(questions[i].Explanation) == "" {
+				return Session{}, fmt.Errorf("model_invalid_response: review question has no study aids")
+			}
+		} else {
+			questions[i].Hint = ""
+			questions[i].Reference = ""
+			questions[i].Explanation = ""
+		}
 	}
 	return s.repository.CreateSession(ctx, userID, Session{AbilityID: input.AbilityID, AbilityName: capability.Name, Mode: input.Mode, BaseLevel: base, TargetLevel: target, Status: "ready", Questions: questions})
 }
 func (s *Service) GetSession(ctx context.Context, userID, id uuid.UUID) (Session, error) {
 	return s.repository.GetSession(ctx, userID, id)
 }
+func (s *Service) ListSessions(ctx context.Context, userID uuid.UUID) ([]Session, error) {
+	return s.repository.ListSessions(ctx, userID)
+}
+func (s *Service) SaveAnswer(ctx context.Context, userID, id uuid.UUID, answer AnswerInput) (Session, error) {
+	session, err := s.repository.GetSession(ctx, userID, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.Status != "ready" && session.Status != "clarifying" {
+		return Session{}, ErrConflict
+	}
+	answer.QuestionID = strings.TrimSpace(answer.QuestionID)
+	answer.Answer = strings.TrimSpace(answer.Answer)
+	if answer.Answer == "" || len([]rune(answer.Answer)) > 8000 {
+		return Session{}, ErrInvalidInput
+	}
+	valid := false
+	for _, q := range session.Questions {
+		if q.ID == answer.QuestionID {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return Session{}, ErrInvalidInput
+	}
+	return s.repository.SaveAnswer(ctx, userID, id, answer)
+}
+func (s *Service) ConfirmSession(ctx context.Context, userID, id uuid.UUID) (Session, error) {
+	return s.repository.ConfirmSession(ctx, userID, id)
+}
 func (s *Service) SubmitSession(ctx context.Context, userID, id uuid.UUID, answers []AnswerInput) (Session, error) {
 	session, err := s.repository.GetSession(ctx, userID, id)
 	if err != nil {
 		return Session{}, err
 	}
-	if session.Status != "ready" {
+	if session.Status != "ready" && session.Status != "clarifying" {
 		return Session{}, ErrConflict
 	}
 	normalized, err := normalizeAnswers(session.Questions, answers)
@@ -308,15 +389,38 @@ func (s *Service) SubmitSession(ctx context.Context, userID, id uuid.UUID, answe
 	if err := validateEvaluation(session, evaluation); err != nil {
 		return Session{}, fmt.Errorf("model_invalid_response: %w", err)
 	}
-	if session.Mode == ModeValidation {
-		allPassed := len(evaluation.QuestionResults) == len(session.Questions)
-		for _, result := range evaluation.QuestionResults {
-			allPassed = allPassed && result.Passed
+	if session.Mode == ModeValidation && session.Status == "ready" && evaluation.Verdict == "uncertain" && len(evaluation.Followups) > 0 {
+		if len(evaluation.Followups) > 3 {
+			return Session{}, fmt.Errorf("model_invalid_response: too many followups")
 		}
-		evaluation.Passed = evaluation.Passed && allPassed && evaluation.Score >= .75
-	} else {
+		seen := map[string]bool{}
+		for _, q := range session.Questions {
+			seen[q.ID] = true
+		}
+		for _, q := range evaluation.Followups {
+			if seen[q.ID] || strings.TrimSpace(q.Prompt) == "" {
+				return Session{}, fmt.Errorf("model_invalid_response: invalid followup")
+			}
+			seen[q.ID] = true
+		}
+		for i := range evaluation.Followups {
+			evaluation.Followups[i].Hint = ""
+			evaluation.Followups[i].Reference = ""
+			evaluation.Followups[i].Explanation = ""
+		}
+		return s.repository.AddClarification(ctx, userID, id, normalized, evaluation.Followups)
+	}
+	if session.Mode == ModeReview {
+		evaluation.Passed = false
+		evaluation.Verdict = "review"
+	}
+	if session.Mode == ModeValidation {
+		evaluation.Passed = evaluation.Verdict == "pass"
+	}
+	if session.Mode == ModeInitial {
 		evaluation.Passed = false
 	}
+	evaluation.Followups = nil
 	return s.repository.CompleteSession(ctx, userID, session.ID, normalized, evaluation)
 }
 
@@ -368,7 +472,7 @@ func validateQuestions(questions []Question, count int) error {
 		questions[index].ID = strings.TrimSpace(questions[index].ID)
 		questions[index].Prompt = strings.TrimSpace(questions[index].Prompt)
 		questions[index].Dimension = strings.TrimSpace(questions[index].Dimension)
-		if questions[index].ID == "" || questions[index].Prompt == "" || questions[index].Dimension == "" || seen[questions[index].ID] {
+		if questions[index].ID == "" || questions[index].Prompt == "" || questions[index].Dimension == "" || questions[index].Position != index+1 || seen[questions[index].ID] {
 			return fmt.Errorf("question %d is invalid", index+1)
 		}
 		seen[questions[index].ID] = true
@@ -396,6 +500,12 @@ func normalizeAnswers(questions []Question, answers []AnswerInput) ([]AnswerInpu
 func validateEvaluation(session Session, value Evaluation) error {
 	if value.Score < 0 || value.Score > 1 || strings.TrimSpace(value.Summary) == "" || len(value.QuestionResults) != len(session.Questions) {
 		return errors.New("evaluation summary, score, or result count is invalid")
+	}
+	if value.Verdict != "pass" && value.Verdict != "not_yet" && value.Verdict != "uncertain" && value.Verdict != "review" {
+		return errors.New("invalid verdict")
+	}
+	if session.Mode == ModeInitial && value.SuggestedLevel != nil && (*value.SuggestedLevel < 0 || *value.SuggestedLevel > 5) {
+		return errors.New("invalid initial level")
 	}
 	known, seen := map[string]bool{}, map[string]bool{}
 	for _, question := range session.Questions {

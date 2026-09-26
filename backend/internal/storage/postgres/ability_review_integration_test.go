@@ -38,7 +38,7 @@ func TestAbilityReviewApproveNewAndRejectsStaleLeaseIntegration(t *testing.T) {
 		_, _ = db.Exec(`DELETE FROM ability_review_requests WHERE id=$1`, requestID)
 		_, _ = db.Exec(`DELETE FROM abilities WHERE normalized_name=$1`, normalized)
 	})
-	levels := []abilityreview.Level{{0, "未学习"}, {1, "了解概念"}, {2, "能完成基础任务"}, {3, "能独立开发"}, {4, "能处理复杂场景"}, {5, "能设计体系"}}
+	levels := []abilityreview.Level{{Level: 0, Description: "未学习"}, {Level: 1, Description: "了解概念"}, {Level: 2, Description: "能完成基础任务"}, {Level: 3, Description: "能独立开发"}, {Level: 4, Description: "能处理复杂场景"}, {Level: 5, Description: "能设计体系"}}
 	result := abilityreview.Result{Decision: "approve_new", Reason: "独立且可评估的框架", NewAbility: abilityreview.NewAbility{Name: name, CategoryCode: catalog[0].CategoryCode, Definition: "集成测试能力", Levels: levels}, Provider: "test", Model: "test", PromptVersion: abilityreview.PromptVersion}
 	input := abilityreview.Input{ID: requestID, LeaseToken: uuid.New(), Catalog: catalog}
 	if err := repo.Complete(context.Background(), input, result, uuid.Nil); err != abilityreview.ErrLeaseLost {

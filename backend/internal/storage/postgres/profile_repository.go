@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
 	"github.com/google/uuid"
@@ -198,13 +199,109 @@ func (r *ProfileRepository) GetOverview(ctx context.Context, userID uuid.UUID) (
 	}
 	result := profile.Overview{MarketProfileReady: marketReady, MaterialCount: total, ReadyMaterialCount: ready, Capabilities: capabilities}
 	for _, item := range capabilities {
-		if item.CurrentLevel > 0 {
+		if item.Assessed {
 			result.AssessedCount++
 		} else {
 			result.PendingCount++
 		}
 	}
+	result.BlockingCount, err = r.blockingRequirementCount(ctx, userID, capabilities)
+	if err != nil {
+		return profile.Overview{}, err
+	}
+	settings, err := r.GetSettings(ctx, userID)
+	if err != nil {
+		return profile.Overview{}, err
+	}
+	result.Complete = marketReady && settings.WeeklyHours != nil && settings.ExpectedWeeks != nil && settings.ExistingExperience != "" && result.BlockingCount == 0
 	return result, nil
+}
+
+func (r *ProfileRepository) blockingRequirementCount(ctx context.Context, userID uuid.UUID, capabilities []profile.Capability) (int, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT requirement.id,requirement.required_count,option.ability_id,COALESCE(grade.level,0)
+		FROM job_description_ability_requirements requirement
+		JOIN job_descriptions jd ON jd.id=requirement.job_description_id
+		JOIN job_targets target ON target.id=jd.target_id AND target.is_current AND target.user_id=$1
+		JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id AND option.ability_id IS NOT NULL
+		LEFT JOIN jd_ability_option_levels grade ON grade.option_id=option.id
+		WHERE jd.user_id=$1 AND jd.status='included' AND COALESCE(grade.requirement_kind,requirement.requirement_kind)<>'preferred'
+		ORDER BY requirement.id`, userID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	users := map[uuid.UUID]profile.Capability{}
+	for _, a := range capabilities {
+		users[a.AbilityID] = a
+	}
+	type state struct {
+		needed    int
+		satisfied map[uuid.UUID]bool
+		unknown   bool
+	}
+	groups := map[uuid.UUID]*state{}
+	for rows.Next() {
+		var id, abilityID uuid.UUID
+		var required, level int
+		if err := rows.Scan(&id, &required, &abilityID, &level); err != nil {
+			return 0, err
+		}
+		g := groups[id]
+		if g == nil {
+			if required < 1 {
+				required = 1
+			}
+			g = &state{needed: required, satisfied: map[uuid.UUID]bool{}}
+			groups[id] = g
+		}
+		a, ok := users[abilityID]
+		if !ok || !a.Assessed {
+			g.unknown = true
+		} else if level > 0 && a.CurrentLevel >= level {
+			g.satisfied[abilityID] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, g := range groups {
+		if len(g.satisfied) < g.needed && g.unknown {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *ProfileRepository) SetCapabilityLevel(ctx context.Context, userID, abilityID uuid.UUID, level int) (profile.Capability, error) {
+	tx, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return profile.Capability{}, err
+	}
+	defer tx.Rollback()
+	var previous sql.NullInt16
+	err = tx.QueryRowContext(ctx, `SELECT current_level FROM user_capability_profiles WHERE user_id=$1 AND ability_id=$2 FOR UPDATE`, userID, abilityID).Scan(&previous)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return profile.Capability{}, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO user_capability_profiles(user_id,ability_id,current_level,manual_level,manual_updated_at,level_source)
+		VALUES($1,$2,$3,$3,NOW(),'manual') ON CONFLICT(user_id,ability_id) DO UPDATE SET
+		current_level=$3,manual_level=$3,manual_updated_at=NOW(),level_source='manual',updated_at=NOW()`, userID, abilityID, level)
+	if err != nil {
+		return profile.Capability{}, err
+	}
+	var old any
+	if previous.Valid {
+		old = previous.Int16
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO user_capability_level_events(user_id,ability_id,previous_level,new_level,source) VALUES($1,$2,$3,$4,'manual')`, userID, abilityID, old, level)
+	if err != nil {
+		return profile.Capability{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return profile.Capability{}, err
+	}
+	return r.GetCapability(ctx, userID, abilityID)
 }
 
 func (r *ProfileRepository) GetSettings(ctx context.Context, userID uuid.UUID) (profile.Settings, error) {
@@ -261,10 +358,14 @@ func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UU
 			FROM ability_jd WHERE level BETWEEN 1 AND 5 GROUP BY ability_id,level
 		)
 		SELECT ability.id,ability.name,category.name,COALESCE(MAX(level_counts.level) FILTER(WHERE level_counts.rank=1),0) AS market_level,
-			COUNT(DISTINCT ability_jd.jd_id) AS covered_count,COALESCE(user_profile.current_level,0),COALESCE(user_profile.evidence_level,0),COALESCE(user_profile.verified_level,0),user_profile.updated_at
+			COUNT(DISTINCT ability_jd.jd_id) AS covered_count,COALESCE(user_profile.current_level,0),COALESCE(user_profile.evidence_level,0),COALESCE(user_profile.verified_level,0),user_profile.updated_at,
+			(user_profile.manual_level IS NOT NULL OR COALESCE(user_profile.current_level,0)>0 OR COALESCE(user_profile.evidence_level,0)>0 OR COALESCE(user_profile.verified_level,0)>0) AS assessed,
+			CASE WHEN user_profile.manual_level IS NOT NULL THEN user_profile.level_source
+			     WHEN user_profile.verified_level>0 AND user_profile.verified_level>=user_profile.current_level THEN 'validation'
+			     ELSE COALESCE(user_profile.level_source,'unassessed') END,user_profile.manual_updated_at
 		FROM ability_jd JOIN abilities ability ON ability.id=ability_jd.ability_id JOIN ability_categories category ON category.id=ability.category_id
 		LEFT JOIN level_counts ON level_counts.ability_id=ability.id LEFT JOIN user_capability_profiles user_profile ON user_profile.user_id=$1 AND user_profile.ability_id=ability.id
-		WHERE ability.is_active GROUP BY ability.id,ability.name,category.name,user_profile.current_level,user_profile.evidence_level,user_profile.verified_level,user_profile.updated_at
+		WHERE ability.is_active GROUP BY ability.id,ability.name,category.name,user_profile.current_level,user_profile.evidence_level,user_profile.verified_level,user_profile.updated_at,user_profile.manual_level,user_profile.level_source,user_profile.manual_updated_at
 		ORDER BY covered_count DESC,ability.sort_order`, userID)
 	if err != nil {
 		return nil, false, err
@@ -276,18 +377,18 @@ func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UU
 	for rows.Next() {
 		var value profile.Capability
 		var covered int
-		if err := rows.Scan(&value.AbilityID, &value.Name, &value.Category, &value.MarketLevel, &covered, &value.CurrentLevel, &value.EvidenceLevel, &value.VerifiedLevel, &value.UpdatedAt); err != nil {
+		if err := rows.Scan(&value.AbilityID, &value.Name, &value.Category, &value.MarketLevel, &covered, &value.CurrentLevel, &value.EvidenceLevel, &value.VerifiedLevel, &value.UpdatedAt, &value.Assessed, &value.LevelSource, &value.ManualUpdatedAt); err != nil {
 			return nil, false, err
 		}
 		value.MarketLevelReady = value.MarketLevel > 0
 		value.Status = "needs_evidence"
-		if value.CurrentLevel > 0 {
+		if value.Assessed {
 			value.Status = "evidence_backed"
 		}
 		if value.VerifiedLevel > 0 && value.VerifiedLevel >= value.CurrentLevel {
 			value.Status = "verified"
 		}
-		value.NeedsValidation = value.MarketLevelReady && value.CurrentLevel < value.MarketLevel
+		value.NeedsValidation = value.Assessed && value.MarketLevelReady && value.CurrentLevel < value.MarketLevel
 		value.Levels = []profile.LevelDefinition{}
 		value.Evidence = []profile.Evidence{}
 		index[value.AbilityID] = len(values)
@@ -352,7 +453,7 @@ func (r *ProfileRepository) GetSession(ctx context.Context, userID, id uuid.UUID
 	var value profile.Session
 	var mode string
 	var questions, answers, evaluation []byte
-	err := r.database.QueryRowContext(ctx, `SELECT s.id,s.ability_id,a.name,s.mode,s.base_level,s.target_level,s.status,s.questions,s.answers,s.evaluation,s.level_updated,s.created_at,s.completed_at FROM profile_practice_sessions s JOIN abilities a ON a.id=s.ability_id WHERE s.id=$1 AND s.user_id=$2`, id, userID).Scan(&value.ID, &value.AbilityID, &value.AbilityName, &mode, &value.BaseLevel, &value.TargetLevel, &value.Status, &questions, &answers, &evaluation, &value.LevelUpdated, &value.CreatedAt, &value.CompletedAt)
+	err := r.database.QueryRowContext(ctx, `SELECT s.id,s.ability_id,a.name,s.mode,s.base_level,s.target_level,s.status,s.questions,s.answers,s.evaluation,s.level_updated,s.clarification_count,s.created_at,s.completed_at FROM profile_practice_sessions s JOIN abilities a ON a.id=s.ability_id WHERE s.id=$1 AND s.user_id=$2`, id, userID).Scan(&value.ID, &value.AbilityID, &value.AbilityName, &mode, &value.BaseLevel, &value.TargetLevel, &value.Status, &questions, &answers, &evaluation, &value.LevelUpdated, &value.ClarificationCount, &value.CreatedAt, &value.CompletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return profile.Session{}, profile.ErrNotFound
 	}
@@ -375,9 +476,105 @@ func (r *ProfileRepository) GetSession(ctx context.Context, userID, id uuid.UUID
 	}
 	return value, nil
 }
+func (r *ProfileRepository) ListSessions(ctx context.Context, userID uuid.UUID) ([]profile.Session, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT id FROM profile_practice_sessions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := []profile.Session{}
+	for _, id := range ids {
+		s, err := r.GetSession(ctx, userID, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, nil
+}
+func (r *ProfileRepository) SaveAnswer(ctx context.Context, userID, id uuid.UUID, answer profile.AnswerInput) (profile.Session, error) {
+	tx, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return profile.Session{}, err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT answers,status FROM profile_practice_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, userID).Scan(&raw, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return profile.Session{}, profile.ErrNotFound
+	}
+	if err != nil {
+		return profile.Session{}, err
+	}
+	if status != "ready" && status != "clarifying" {
+		return profile.Session{}, profile.ErrConflict
+	}
+	var answers []profile.AnswerInput
+	if err = json.Unmarshal(raw, &answers); err != nil {
+		return profile.Session{}, err
+	}
+	found := false
+	for i := range answers {
+		if answers[i].QuestionID == answer.QuestionID {
+			answers[i] = answer
+			found = true
+			break
+		}
+	}
+	if !found {
+		answers = append(answers, answer)
+	}
+	encoded, _ := json.Marshal(answers)
+	if _, err = tx.ExecContext(ctx, `UPDATE profile_practice_sessions SET answers=$3 WHERE id=$1 AND user_id=$2`, id, userID, encoded); err != nil {
+		return profile.Session{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return profile.Session{}, err
+	}
+	return r.GetSession(ctx, userID, id)
+}
+func (r *ProfileRepository) AddClarification(ctx context.Context, userID, id uuid.UUID, answers []profile.AnswerInput, followups []profile.Question) (profile.Session, error) {
+	session, err := r.GetSession(ctx, userID, id)
+	if err != nil {
+		return profile.Session{}, err
+	}
+	questions := append(append([]profile.Question{}, session.Questions...), followups...)
+	questionJSON, _ := json.Marshal(questions)
+	answerJSON, _ := json.Marshal(answers)
+	result, err := r.database.ExecContext(ctx, `UPDATE profile_practice_sessions SET status='clarifying',questions=$3,answers=$4,clarification_count=$5 WHERE id=$1 AND user_id=$2 AND status='ready'`, id, userID, questionJSON, answerJSON, len(followups))
+	if err != nil {
+		return profile.Session{}, err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return profile.Session{}, profile.ErrConflict
+	}
+	return r.GetSession(ctx, userID, id)
+}
 func (r *ProfileRepository) CompleteSession(ctx context.Context, userID, id uuid.UUID, answers []profile.AnswerInput, evaluation profile.Evaluation) (profile.Session, error) {
 	answerJSON, _ := json.Marshal(answers)
 	evaluationJSON, _ := json.Marshal(evaluation)
+	result, err := r.database.ExecContext(ctx, `UPDATE profile_practice_sessions SET status='evaluated',answers=$3,evaluation=$4,completed_at=NOW() WHERE id=$1 AND user_id=$2 AND status IN ('ready','clarifying')`, id, userID, answerJSON, evaluationJSON)
+	if err != nil {
+		return profile.Session{}, err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return profile.Session{}, profile.ErrConflict
+	}
+	return r.GetSession(ctx, userID, id)
+}
+func (r *ProfileRepository) ConfirmSession(ctx context.Context, userID, id uuid.UUID) (profile.Session, error) {
 	tx, err := r.database.BeginTx(ctx, nil)
 	if err != nil {
 		return profile.Session{}, err
@@ -385,26 +582,69 @@ func (r *ProfileRepository) CompleteSession(ctx context.Context, userID, id uuid
 	defer tx.Rollback()
 	var abilityID uuid.UUID
 	var mode, status string
-	var target int
-	if err = tx.QueryRowContext(ctx, `SELECT ability_id,mode,status,target_level FROM profile_practice_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, userID).Scan(&abilityID, &mode, &status, &target); errors.Is(err, sql.ErrNoRows) {
+	var base, target int
+	var levelUpdated bool
+	var raw []byte
+	var createdAt time.Time
+	err = tx.QueryRowContext(ctx, `SELECT ability_id,mode,status,base_level,target_level,level_updated,evaluation,created_at FROM profile_practice_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, userID).Scan(&abilityID, &mode, &status, &base, &target, &levelUpdated, &raw, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return profile.Session{}, profile.ErrNotFound
+	}
+	if err != nil {
+		return profile.Session{}, err
+	}
+	if status != "evaluated" || levelUpdated || mode == "review" {
+		return profile.Session{}, profile.ErrConflict
+	}
+	var evaluation profile.Evaluation
+	if err = json.Unmarshal(raw, &evaluation); err != nil {
+		return profile.Session{}, err
+	}
+	if mode == "validation" {
+		if !evaluation.Passed || evaluation.Verdict != "pass" {
+			return profile.Session{}, profile.ErrPrecondition
+		}
+		target = base + 1
+	}
+	if mode == "initial" {
+		if evaluation.SuggestedLevel == nil {
+			return profile.Session{}, profile.ErrPrecondition
+		}
+		target = *evaluation.SuggestedLevel
+	}
+	var current int
+	var manual sql.NullInt16
+	var profileUpdated time.Time
+	err = tx.QueryRowContext(ctx, `SELECT current_level,manual_level,updated_at FROM user_capability_profiles WHERE user_id=$1 AND ability_id=$2 FOR UPDATE`, userID, abilityID).Scan(&current, &manual, &profileUpdated)
+	if errors.Is(err, sql.ErrNoRows) {
+		if mode != "initial" {
+			return profile.Session{}, profile.ErrConflict
+		}
+		current = 0
 	} else if err != nil {
 		return profile.Session{}, err
 	}
-	if status != "ready" {
+	if current != base || mode == "initial" && manual.Valid || !profileUpdated.IsZero() && profileUpdated.After(createdAt) {
 		return profile.Session{}, profile.ErrConflict
 	}
-	levelUpdated := false
-	if mode == "validation" && evaluation.Passed {
-		var current int
-		_ = tx.QueryRowContext(ctx, `SELECT COALESCE(current_level,0) FROM user_capability_profiles WHERE user_id=$1 AND ability_id=$2`, userID, abilityID).Scan(&current)
-		levelUpdated = current < target
-		if _, err = tx.ExecContext(ctx, `INSERT INTO user_capability_profiles(user_id,ability_id,verified_level,current_level) VALUES($1,$2,$3,$3) ON CONFLICT(user_id,ability_id) DO UPDATE SET verified_level=GREATEST(user_capability_profiles.verified_level,EXCLUDED.verified_level),current_level=GREATEST(user_capability_profiles.current_level,EXCLUDED.current_level),updated_at=NOW()`, userID, abilityID, target); err != nil {
-			return profile.Session{}, err
-		}
+	if mode == "initial" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO user_capability_profiles(user_id,ability_id,current_level,manual_level,manual_updated_at,level_source) VALUES($1,$2,$3,$3,NOW(),'initial') ON CONFLICT(user_id,ability_id) DO UPDATE SET current_level=$3,manual_level=$3,manual_updated_at=NOW(),level_source='initial',updated_at=NOW()`, userID, abilityID, target)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE user_capability_profiles SET current_level=$3,verified_level=GREATEST(verified_level,$3),manual_level=$3,manual_updated_at=NOW(),level_source='validation',updated_at=NOW() WHERE user_id=$1 AND ability_id=$2`, userID, abilityID, target)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE profile_practice_sessions SET status='evaluated',answers=$3,evaluation=$4,level_updated=$5,completed_at=NOW() WHERE id=$1 AND user_id=$2 AND status='ready'`, id, userID, answerJSON, evaluationJSON, levelUpdated); err != nil {
+	if err != nil {
 		return profile.Session{}, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO user_capability_level_events(user_id,ability_id,previous_level,new_level,source,session_id) VALUES($1,$2,$3,$4,$5,$6)`, userID, abilityID, base, target, mode, id)
+	if err != nil {
+		return profile.Session{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE profile_practice_sessions SET level_updated=TRUE WHERE id=$1 AND user_id=$2 AND level_updated=FALSE`, id, userID)
+	if err != nil {
+		return profile.Session{}, err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return profile.Session{}, profile.ErrConflict
 	}
 	if err = tx.Commit(); err != nil {
 		return profile.Session{}, err
@@ -418,7 +658,7 @@ func refreshEvidenceLevels(ctx context.Context, tx *sql.Tx, userID uuid.UUID, ab
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(e.level),0) FROM user_profile_evidence e JOIN user_profile_materials m ON m.id=e.material_id WHERE m.user_id=$1 AND e.ability_id=$2 AND m.status IN ('processing','ready')`, userID, abilityID).Scan(&level); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO user_capability_profiles(user_id,ability_id,evidence_level,current_level) VALUES($1,$2,$3,$3) ON CONFLICT(user_id,ability_id) DO UPDATE SET evidence_level=EXCLUDED.evidence_level,current_level=GREATEST(user_capability_profiles.current_level,EXCLUDED.evidence_level),updated_at=NOW()`, userID, abilityID, level); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO user_capability_profiles(user_id,ability_id,evidence_level,current_level) VALUES($1,$2,$3,$3) ON CONFLICT(user_id,ability_id) DO UPDATE SET evidence_level=EXCLUDED.evidence_level,current_level=CASE WHEN user_capability_profiles.manual_level IS NOT NULL THEN user_capability_profiles.current_level ELSE GREATEST(user_capability_profiles.current_level,EXCLUDED.evidence_level) END,updated_at=NOW()`, userID, abilityID, level); err != nil {
 			return err
 		}
 	}

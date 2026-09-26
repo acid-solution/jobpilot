@@ -3,3 +3,6 @@
 .dev-secrets.ps1
 .gocache/
 *.log
+jobpilot-next-agent-dev.exe
+agent-*.out
+agent-*.err

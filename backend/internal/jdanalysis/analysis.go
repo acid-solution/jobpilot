@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "jd-classify-candidates-v11"
+const PromptVersion = "jd-vector-candidates-v12"
 const ClassificationReviewPromptVersion = "job-classification-review-v1"
 
 var (
@@ -54,13 +54,17 @@ const (
 )
 
 type AbilityRequirementOption struct {
-	RawLabel      string
-	AbilityName   string
-	CatalogCode   string
-	Qualifier     string
-	Evidence      string
-	RequiredLevel *int
-	Candidate     *AbilityCandidate
+	ExistingID              uuid.UUID `json:"-"`
+	OriginalAbilityID       uuid.UUID `json:"-"`
+	OriginalReviewRequestID uuid.UUID `json:"-"`
+	OriginalResolution      string    `json:"-"`
+	RawLabel                string
+	AbilityName             string
+	CatalogCode             string
+	Qualifier               string
+	Evidence                string
+	RequiredLevel           *int
+	Candidate               *AbilityCandidate
 }
 
 type AbilityCandidate struct {
@@ -72,6 +76,7 @@ type AbilityCandidate struct {
 }
 
 type AbilityRequirement struct {
+	ExistingID      uuid.UUID `json:"-"`
 	Operator        AbilityRequirementOperator
 	RequiredCount   int
 	RequirementKind string
@@ -107,6 +112,14 @@ type AbilityOption struct {
 	CategoryName string   `json:"category_name,omitempty"`
 	Aliases      []string `json:"aliases"`
 	Definition   string   `json:"definition,omitempty"`
+}
+
+type AbilityMatch struct {
+	Code         string   `json:"code"`
+	Name         string   `json:"name"`
+	CategoryCode string   `json:"category_code"`
+	Aliases      []string `json:"aliases"`
+	Definition   string   `json:"definition"`
 }
 
 type Catalog struct {
@@ -155,6 +168,8 @@ type ClassificationReviewResult struct {
 }
 
 type Result struct {
+	VectorNormalized     bool                    `json:"-"`
+	OriginalOptions      []AbilityOptionSnapshot `json:"-"`
 	DocumentType         DocumentType
 	ValidationStatus     ValidationStatus
 	ValidationReason     string
@@ -170,6 +185,13 @@ type Result struct {
 	Model                string
 	PromptVersion        string
 	ClassificationReview *ClassificationReviewResult
+}
+
+type AbilityOptionSnapshot struct {
+	ID              uuid.UUID
+	AbilityID       uuid.UUID
+	ReviewRequestID uuid.UUID
+	Resolution      string
 }
 
 type Job struct {
@@ -240,7 +262,14 @@ type Worker struct {
 	leaseDuration        time.Duration
 	recoveryEvery        time.Duration
 	classificationReview ClassificationReviewConfig
+	normalizer           AbilityNormalizer
 }
+
+type AbilityNormalizer interface {
+	Normalize(context.Context, uuid.UUID, string, string, Catalog, Result) (Result, error)
+}
+
+func (w *Worker) SetNormalizer(value AbilityNormalizer) { w.normalizer = value }
 
 func NewWorker(repository Repository, credentials CredentialProvider, analyzer Analyzer, pollEvery time.Duration, review ...ClassificationReviewConfig) *Worker {
 	worker := &Worker{
@@ -339,6 +368,9 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	}
 
 	result, err := w.analyzer.AnalyzeJD(taskCtx, credentials.APIKey, credentials.Model, job.RawText, catalog)
+	if err == nil && result.ValidationStatus == ValidationValid && w.normalizer != nil {
+		result, err = w.normalizer.Normalize(taskCtx, job.UserID, credentials.APIKey, credentials.Model, catalog, result)
+	}
 	if err == nil && result.ValidationStatus == ValidationValid && w.classificationReview.Enabled {
 		if w.classificationReview.Reviewer == nil || strings.TrimSpace(w.classificationReview.APIKey) == "" {
 			err = NewError("classification_review_not_configured", false, errors.New("classification review platform model is not configured"))

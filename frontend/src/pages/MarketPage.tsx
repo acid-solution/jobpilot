@@ -530,6 +530,17 @@ export function MarketPage() {
 		}
 	}
 
+	const retryAbilityGrading = async (id: string) => {
+		setError('')
+		try {
+			const updated = await jobPilotAPI.retryAbilityGrading(id)
+			setSamples((current) => current.map((sample) => sample.id === id ? mapJD(updated) : sample))
+			setNotice('能力等级判定已重新进入队列。')
+		} catch (retryError) {
+			setError(retryError instanceof Error ? retryError.message : '重新判级失败')
+		}
+	}
+
   return (
     <div className="page-content market-page">
       <div className="page-heading-row">
@@ -763,7 +774,7 @@ export function MarketPage() {
 					<p>{item.evidence}</p><small>{item.reason}</small>
 				  </article>)}</div>
 				  : selectedJD.abilityGrading?.status === 'failed'
-					? <p className="detail-muted">能力已经提取，但独立等级判定暂时失败；这不会影响 JD 的其他分析结果。</p>
+					? <div className="detail-status-card"><AlertCircle size={17} /><div><strong>能力等级判定暂时失败</strong><p>JD 解析结果仍然保留，可以单独重新判级。</p><button className="button retry-button" type="button" onClick={() => void retryAbilityGrading(selectedJD.id)}><RotateCcw size={15} />重新判级</button></div></div>
 					: selectedJD.abilities.length > 0 ? <p className="detail-muted">正在按每项能力的 L0～L5 标准判断这份 JD 的要求等级。</p> : null}
 				  {!selectedJD.abilityLevels?.length && selectedJD.abilityEvidence?.length ? <div className="ability-evidence-list">{selectedJD.abilityEvidence.map((item) => <p key={`${item.name}-${item.evidence}`}><strong>{item.name}</strong><span>{item.evidence}</span></p>)}</div> : null}
                 </section>

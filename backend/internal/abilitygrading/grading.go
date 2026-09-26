@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "jd-ability-level-v3"
+const PromptVersion = "jd-ability-level-v4-options"
 
 var (
 	ErrNoJob     = errors.New("no claimable JD ability grading job")
@@ -22,11 +22,12 @@ type LevelDefinition struct {
 }
 
 type Evidence struct {
-	RequirementKind string `json:"requirement_kind"`
-	Operator        string `json:"operator"`
-	RequiredCount   int    `json:"required_count"`
-	Quote           string `json:"quote"`
-	Qualifier       string `json:"qualifier,omitempty"`
+	OptionID        uuid.UUID `json:"option_id"`
+	RequirementKind string    `json:"requirement_kind"`
+	Operator        string    `json:"operator"`
+	RequiredCount   int       `json:"required_count"`
+	Quote           string    `json:"quote"`
+	Qualifier       string    `json:"qualifier,omitempty"`
 }
 
 type Ability struct {
@@ -51,13 +52,14 @@ type Input struct {
 }
 
 type Assessment struct {
-	AbilityCode     string  `json:"ability_code"`
-	Level           int     `json:"level"`
-	Source          string  `json:"source"`
-	RequirementKind string  `json:"requirement_kind"`
-	EvidenceQuote   string  `json:"evidence_quote"`
-	Reason          string  `json:"reason"`
-	Confidence      float64 `json:"confidence"`
+	OptionID        uuid.UUID `json:"option_id"`
+	AbilityCode     string    `json:"ability_code"`
+	Level           int       `json:"level"`
+	Source          string    `json:"source"`
+	RequirementKind string    `json:"requirement_kind"`
+	EvidenceQuote   string    `json:"evidence_quote"`
+	Reason          string    `json:"reason"`
+	Confidence      float64   `json:"confidence"`
 }
 
 type Result struct {

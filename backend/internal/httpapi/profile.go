@@ -49,6 +49,27 @@ func saveProfileSettings(service ProfileService) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"settings": value}})
 	}
 }
+func setProfileCapabilityLevel(service ProfileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := profileID(c)
+		if !ok {
+			return
+		}
+		var input struct {
+			Level *int `json:"level"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil || input.Level == nil {
+			writeError(c, http.StatusBadRequest, "invalid_request", "请选择 L0–L5 等级")
+			return
+		}
+		value, err := service.SetCapabilityLevel(c, identity.UserID(c), id, *input.Level)
+		if err != nil {
+			writeProfileError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"capability": value}})
+	}
+}
 func listProfileMaterials(service ProfileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		values, err := service.ListMaterials(c, identity.UserID(c))
@@ -182,6 +203,49 @@ func getProfileSession(service ProfileService) gin.HandlerFunc {
 			return
 		}
 		value, err := service.GetSession(c, identity.UserID(c), id)
+		if err != nil {
+			writeProfileError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"session": value}})
+	}
+}
+func listProfileSessions(service ProfileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		values, err := service.ListSessions(c, identity.UserID(c))
+		if err != nil {
+			writeProfileError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"sessions": values}})
+	}
+}
+func confirmProfileSession(service ProfileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := profileID(c)
+		if !ok {
+			return
+		}
+		value, err := service.ConfirmSession(c, identity.UserID(c), id)
+		if err != nil {
+			writeProfileError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"session": value}})
+	}
+}
+func saveProfileAnswer(service ProfileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := profileID(c)
+		if !ok {
+			return
+		}
+		var input profile.AnswerInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			writeError(c, http.StatusBadRequest, "invalid_request", "回答格式不正确")
+			return
+		}
+		value, err := service.SaveAnswer(c, identity.UserID(c), id, input)
 		if err != nil {
 			writeProfileError(c, err)
 			return

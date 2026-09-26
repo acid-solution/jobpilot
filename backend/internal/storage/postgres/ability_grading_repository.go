@@ -104,7 +104,7 @@ func (r *AbilityGradingRepository) Claim(ctx context.Context, lease time.Duratio
 }
 
 func (r *AbilityGradingRepository) loadAbilities(ctx context.Context, jdID uuid.UUID) ([]abilitygrading.Ability, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT ability.id,ability.code,ability.name,
+	rows, err := r.database.QueryContext(ctx, `SELECT ability.id,ability.code,ability.name,option.id,
 		requirement.requirement_kind,requirement.operator,requirement.required_count,requirement.evidence,option.qualifier
 		FROM job_description_ability_requirement_options option
 		JOIN job_description_ability_requirements requirement ON requirement.id=option.requirement_id
@@ -117,15 +117,14 @@ func (r *AbilityGradingRepository) loadAbilities(ctx context.Context, jdID uuid.
 	type item struct {
 		id    uuid.UUID
 		value abilitygrading.Ability
-		seen  map[string]struct{}
 	}
 	values := make([]item, 0)
 	positions := map[uuid.UUID]int{}
 	for rows.Next() {
-		var abilityID uuid.UUID
+		var abilityID, optionID uuid.UUID
 		var code, name, kind, operator, quote, qualifier string
 		var requiredCount int
-		if err := rows.Scan(&abilityID, &code, &name, &kind, &operator, &requiredCount, &quote, &qualifier); err != nil {
+		if err := rows.Scan(&abilityID, &code, &name, &optionID, &kind, &operator, &requiredCount, &quote, &qualifier); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -133,15 +132,10 @@ func (r *AbilityGradingRepository) loadAbilities(ctx context.Context, jdID uuid.
 		if !ok {
 			position = len(values)
 			positions[abilityID] = position
-			values = append(values, item{id: abilityID, value: abilitygrading.Ability{Code: code, Name: name, Levels: []abilitygrading.LevelDefinition{}, Evidences: []abilitygrading.Evidence{}}, seen: map[string]struct{}{}})
+			values = append(values, item{id: abilityID, value: abilitygrading.Ability{Code: code, Name: name, Levels: []abilitygrading.LevelDefinition{}, Evidences: []abilitygrading.Evidence{}}})
 		}
-		key := kind + "\x00" + quote + "\x00" + qualifier
-		if _, duplicate := values[position].seen[key]; duplicate {
-			continue
-		}
-		values[position].seen[key] = struct{}{}
 		values[position].value.Evidences = append(values[position].value.Evidences, abilitygrading.Evidence{
-			RequirementKind: kind, Operator: operator, RequiredCount: requiredCount, Quote: quote, Qualifier: qualifier,
+			OptionID: optionID, RequirementKind: kind, Operator: operator, RequiredCount: requiredCount, Quote: quote, Qualifier: qualifier,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -207,6 +201,9 @@ func (r *AbilityGradingRepository) Complete(ctx context.Context, input abilitygr
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockUserMutationTx(ctx, tx, input.UserID); err != nil {
+		return err
+	}
 	updated, err := tx.ExecContext(ctx, `UPDATE jd_ability_level_jobs
 		SET status='succeeded',last_error=NULL,lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,
 		    provider=$3,model=$4,prompt_version=$5,provider_request_id=$6,input_tokens=$7,output_tokens=$8,
@@ -222,7 +219,27 @@ func (r *AbilityGradingRepository) Complete(ctx context.Context, input abilitygr
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jd_ability_level_assessments WHERE job_description_id=$1`, input.JobDescriptionID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jd_ability_option_levels WHERE job_description_id=$1`, input.JobDescriptionID); err != nil {
+		return err
+	}
+	// The legacy market summary remains one row per JD, ability and kind.
+	// Every option is stored separately for requirement-level gap decisions.
+	type aggregateKey struct{ code, kind string }
+	aggregates := map[aggregateKey]abilitygrading.Assessment{}
 	for _, assessment := range result.Assessments {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO jd_ability_option_levels(
+			option_id,job_description_id,ability_id,level,source,requirement_kind,evidence_quote,reason,confidence,prompt_version)
+			SELECT $1,$2,ability.id,$4,$5,$6,$7,$8,$9,$10 FROM abilities ability WHERE ability.code=$3 AND ability.is_active`,
+			assessment.OptionID, input.JobDescriptionID, assessment.AbilityCode, assessment.Level, assessment.Source,
+			assessment.RequirementKind, assessment.EvidenceQuote, assessment.Reason, assessment.Confidence, abilitygrading.PromptVersion); err != nil {
+			return fmt.Errorf("save JD option level: %w", err)
+		}
+		key := aggregateKey{assessment.AbilityCode, assessment.RequirementKind}
+		if previous, ok := aggregates[key]; !ok || assessment.Level > previous.Level {
+			aggregates[key] = assessment
+		}
+	}
+	for _, assessment := range aggregates {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO jd_ability_level_assessments(
 			job_description_id,ability_id,level,source,requirement_kind,evidence_quote,reason,
 			confidence,level_standard_version,prompt_version)
@@ -249,6 +266,9 @@ func normalizeAssessmentKinds(input abilitygrading.Input, assessments []abilityg
 		}
 		kind := "unspecified"
 		for _, evidence := range ability.Evidences {
+			if assessment.OptionID != uuid.Nil && assessment.OptionID != evidence.OptionID {
+				continue
+			}
 			if !strings.Contains(evidence.Quote, assessment.EvidenceQuote) && !strings.Contains(assessment.EvidenceQuote, evidence.Quote) {
 				continue
 			}
@@ -321,8 +341,19 @@ func validateGradingResult(input abilitygrading.Input, result abilitygrading.Res
 	if len(input.Abilities) > 0 && len(result.Assessments) == 0 {
 		return errors.New("missing ability assessments")
 	}
-	seen := make(map[string]struct{})
-	seenAbility := make(map[string]struct{})
+	options := map[uuid.UUID]struct {
+		code     string
+		evidence abilitygrading.Evidence
+	}{}
+	for _, ability := range input.Abilities {
+		for _, evidence := range ability.Evidences {
+			options[evidence.OptionID] = struct {
+				code     string
+				evidence abilitygrading.Evidence
+			}{ability.Code, evidence}
+		}
+	}
+	seen := make(map[uuid.UUID]struct{})
 	for _, assessment := range result.Assessments {
 		ability, ok := abilities[assessment.AbilityCode]
 		if !ok || assessment.Level < 1 || assessment.Level > 5 {
@@ -340,25 +371,17 @@ func validateGradingResult(input abilitygrading.Input, result abilitygrading.Res
 			len([]rune(assessment.Reason)) > 800 || assessment.Confidence < 0 || assessment.Confidence > 1 {
 			return errors.New("assessment is missing valid evidence, reason, or confidence")
 		}
-		evidenceMatches := false
-		for _, evidence := range ability.Evidences {
-			if strings.Contains(evidence.Quote, assessment.EvidenceQuote) || strings.Contains(assessment.EvidenceQuote, evidence.Quote) {
-				evidenceMatches = true
-				break
-			}
-		}
-		if !evidenceMatches {
+		option, exists := options[assessment.OptionID]
+		if !exists || option.code != ability.Code || !strings.Contains(option.evidence.Quote, assessment.EvidenceQuote) && !strings.Contains(assessment.EvidenceQuote, option.evidence.Quote) {
 			return errors.New("assessment evidence does not belong to the ability")
 		}
-		key := assessment.AbilityCode + "\x00" + assessment.RequirementKind
-		if _, duplicate := seen[key]; duplicate {
-			return errors.New("duplicate assessment for ability and requirement kind")
+		if _, duplicate := seen[assessment.OptionID]; duplicate {
+			return errors.New("duplicate assessment for requirement option")
 		}
-		seen[key] = struct{}{}
-		seenAbility[assessment.AbilityCode] = struct{}{}
+		seen[assessment.OptionID] = struct{}{}
 	}
-	if len(seenAbility) != len(input.Abilities) {
-		return errors.New("not every ability was assessed")
+	if len(seen) != len(options) {
+		return errors.New("not every requirement option was assessed")
 	}
 	return nil
 }

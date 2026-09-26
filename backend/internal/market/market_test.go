@@ -59,6 +59,9 @@ func (s *marketRepositoryStub) RetryAnalysis(context.Context, uuid.UUID, uuid.UU
 func (s *marketRepositoryStub) RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error) {
 	return JobDescription{}, nil
 }
+func (s *marketRepositoryStub) RetryAbilityGrading(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error) {
+	return JobDescription{}, nil
+}
 
 func (s *marketRepositoryStub) ProfileByTarget(context.Context, uuid.UUID, uuid.UUID) (Profile, error) {
 	return Profile{}, nil

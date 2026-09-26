@@ -87,9 +87,7 @@ function Dashboard({
   const targetComplete = Boolean(target)
   const marketComplete = Boolean(market?.complete)
   const totalCapabilities = profile?.capabilities.length ?? 0
-  const profileComplete = Boolean(
-    profile?.market_profile_ready && totalCapabilities > 0 && profile.pending_count === 0,
-  )
+  const profileComplete = Boolean(profile?.complete)
   const remainingJDCount = Math.max(0, (market?.required_jd_count ?? 10) - (market?.included_jd_count ?? 0))
   const remainingStepCount = [targetComplete, marketComplete, profileComplete].filter((complete) => !complete).length
   const steps = [
@@ -259,6 +257,7 @@ export default function App() {
 
 function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSignedOut: () => void }) {
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard')
+  const [agentRefresh, setAgentRefresh] = useState(0)
   const [notice, setNotice] = useState('')
   const [target, setTarget] = useState<JobTarget | null>(null)
   const [targetDialogOpen, setTargetDialogOpen] = useState(false)
@@ -268,6 +267,15 @@ function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSigned
   const currentLabel = navItems.find((item) => item.id === currentPage)?.label ?? '工作台'
   const targetLabel = target ? formatTarget(target) : targetLoading ? '正在读取……' : '尚未设置求职目标'
   const email = session.account.identities.find((identity) => identity.kind === 'email')?.value ?? '已登录用户'
+
+  useEffect(() => {
+    const refresh = () => {
+      setAgentRefresh((value) => value + 1)
+      jobPilotAPI.getCurrentTarget().then(setTarget).catch(() => setTarget(null))
+    }
+    window.addEventListener('jobpilot:agent-change', refresh)
+    return () => window.removeEventListener('jobpilot:agent-change', refresh)
+  }, [])
 
   useEffect(() => {
     jobPilotAPI.getCurrentTarget()
@@ -371,6 +379,7 @@ function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSigned
         )}
         {currentPage === 'dashboard' ? (
           <Dashboard
+            key={agentRefresh}
             target={target}
             onOpenTarget={() => setTargetDialogOpen(true)}
             onOpenMarket={() => setCurrentPage('market')}
@@ -378,21 +387,23 @@ function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSigned
             onOpenProjects={() => setCurrentPage('projects')}
           />
         ) : currentPage === 'market' ? (
-          <MarketPage key={target ? `${target.id}:${target.updated_at}` : 'no-target'} />
+          <MarketPage key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} />
         ) : currentPage === 'profile' ? (
-          <UserProfilePage target={target} />
+          <UserProfilePage key={agentRefresh} target={target} />
         ) : currentPage === 'projects' ? (
-          <ProjectsPage onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} />
+          <ProjectsPage key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} />
         ) : currentPage === 'gaps' ? (
-          <KnowledgeGapsPage onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} />
+          <KnowledgeGapsPage key={agentRefresh} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} onOpenSettings={() => setCurrentPage('settings')} />
         ) : (
-          <SettingsPage />
+          <SettingsPage key={agentRefresh} />
         )}
       </main>
 
       <AgentWidget
+        key={target?.id ?? 'no-target'}
         currentPage={currentLabel}
         currentTarget={targetLabel}
+        targetRevision={target ? `${target.id}:${target.updated_at}` : targetLabel}
         nextStepPrompt={nextStepPrompt}
       />
 

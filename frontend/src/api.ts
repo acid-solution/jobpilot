@@ -135,7 +135,7 @@ export interface MarketProfile {
 
 export type ProfileMaterialType = 'resume' | 'experience'
 export type ProfileMaterialStatus = 'draft' | 'processing' | 'ready' | 'failed'
-export type ProfilePracticeMode = 'validation' | 'review'
+export type ProfilePracticeMode = 'validation' | 'review' | 'initial'
 
 export interface ProfileMaterial {
   id: string
@@ -174,6 +174,9 @@ export interface ProfileCapability {
   market_level: number
   market_level_ready: boolean
   current_level: number
+  assessed: boolean
+  level_source: string
+  manual_updated_at?: string
   evidence_level: number
   verified_level: number
   status: 'needs_evidence' | 'evidence_backed' | 'verified'
@@ -189,6 +192,8 @@ export interface UserProfileOverview {
   ready_material_count: number
   assessed_count: number
   pending_count: number
+  blocking_count: number
+  complete: boolean
   capabilities: ProfileCapability[]
 }
 
@@ -197,6 +202,9 @@ export interface ProfileQuestion {
   prompt: string
   dimension: string
   position: number
+  hint?: string
+  reference?: string
+  explanation?: string
 }
 
 export interface ProfileQuestionResult {
@@ -212,18 +220,98 @@ export interface ProfilePracticeSession {
   mode: ProfilePracticeMode
   base_level: number
   target_level: number
-  status: 'ready' | 'evaluated'
+  status: 'ready' | 'clarifying' | 'evaluated'
+  clarification_count: number
   questions: ProfileQuestion[]
   answers?: Array<{ question_id: string; answer: string }>
   evaluation?: {
     passed: boolean
     score: number
+    verdict: 'pass' | 'not_yet' | 'uncertain' | 'review'
+    suggested_level?: number
     summary: string
     question_results: ProfileQuestionResult[]
   }
   level_updated: boolean
   created_at: string
   completed_at?: string
+}
+
+export interface KnowledgeGapEvidence { jd_id: string; jd_title: string; quote: string; level: number; source: 'explicit' | 'inferred'; reason: string }
+export interface KnowledgeGapItem {
+  id: string
+  kind: 'ability' | 'requirement'
+  name: string
+  ability_id?: string
+  current_level?: number
+  target_level?: number
+  user_source?: string
+  user_evidence?: ProfileEvidence[]
+  sample_count: number
+  required_count?: number
+  satisfied_count?: number
+  options?: Array<{ name: string; ability_id: string; current_level: number; required_level: number; assessed: boolean; satisfied: boolean }>
+  evidences: KnowledgeGapEvidence[]
+}
+export interface KnowledgeGapReport { target_id: string; gaps: KnowledgeGapItem[]; met: KnowledgeGapItem[]; preferred: KnowledgeGapItem[]; generated_at: string }
+export interface KnowledgeGapView {
+  report?: KnowledgeGapReport
+  stale: boolean
+  readiness: { code: string; message: string; included_jd_count: number; pending_review_count: number; failed_review_count: number; pending_grading_count: number; failed_grading_count: number; missing_ability_count: number }
+}
+
+export interface ProjectReference {
+  full_name: string
+  url: string
+  description: string
+  language: string
+  archived: boolean
+  checked_at: string
+  facts: Array<{ text: string; quote: string; source_url: string }>
+  comparison: {
+    similarities: string[]
+    differences: string[]
+    project_advantages: string[]
+    project_limits: string[]
+    repository_advantages: string[]
+    repository_limits: string[]
+  }
+}
+export interface RecommendedProject {
+  id: string
+  rank: number
+  title: string
+  summary: string
+  audience: string
+  problem: string
+  shape: string
+  scope: string[]
+  fit_reasons: string[]
+  abilities: string[]
+  duration: string
+  known_facts: string[]
+  assumptions: string[]
+  references: ProjectReference[]
+  searched_directions: string[]
+  no_reference_reason?: string
+}
+export interface ProjectRecommendationsView {
+  readiness: KnowledgeGapView['readiness']
+  report?: { id: string; target_title: string; projects: RecommendedProject[]; empty_reason?: string; generated_at: string }
+  selected_project_id?: string
+  stale: boolean
+  job?: {
+    id: string
+    status: 'queued' | 'running' | 'succeeded' | 'failed'
+    phase: 'draft' | 'research' | 'compare'
+    draft_count: number
+    researched_count: number
+    attempts: number
+    max_attempts: number
+    next_attempt_at?: string
+    error_code?: string
+    updated_at: string
+  }
 }
 
 export interface UserProfileSettings {
@@ -475,6 +563,7 @@ export const jobPilotAPI = {
 	deleteJD: (id: string) => request<void>(`/api/v1/jds/${id}`, { method: 'DELETE' }),
   retryJD: (id: string) => request<JobDescription>(`/api/v1/jds/${id}/retry`, { method: 'POST' }),
 	retryAbilityReviews: (id: string) => request<JobDescription>(`/api/v1/jds/${id}/ability-reviews/retry`, { method: 'POST' }),
+	retryAbilityGrading: (id: string) => request<JobDescription>(`/api/v1/jds/${id}/ability-grading/retry`, { method: 'POST' }),
   getDeepSeekConfig: () => request<ModelConfig>('/api/v1/model-configs/deepseek'),
   saveDeepSeekConfig: (apiKey: string, model = 'deepseek-flash') => request<ModelConfig>('/api/v1/model-configs/deepseek', {
     method: 'PUT',
@@ -486,6 +575,12 @@ export const jobPilotAPI = {
   }),
   deleteDeepSeekConfig: () => request<void>('/api/v1/model-configs/deepseek', { method: 'DELETE' }),
   getUserProfile: () => request<{ profile: UserProfileOverview }>('/api/v1/profile'),
+  setProfileCapabilityLevel: (id: string, level: number) => request<{ capability: ProfileCapability }>(`/api/v1/profile/capabilities/${id}/level`, { method: 'PUT', body: JSON.stringify({ level }) }),
+  getKnowledgeGaps: () => request<KnowledgeGapView>('/api/v1/knowledge-gaps'),
+  analyzeKnowledgeGaps: () => request<KnowledgeGapView>('/api/v1/knowledge-gaps/analyze', { method: 'POST' }),
+  getProjectRecommendations: () => request<ProjectRecommendationsView>('/api/v1/project-recommendations'),
+  generateProjectRecommendations: (adjustment = '') => request<ProjectRecommendationsView>('/api/v1/project-recommendations', { method: 'POST', body: JSON.stringify({ adjustment }) }),
+  selectRecommendedProject: (reportId: string, projectId: string) => request<ProjectRecommendationsView>('/api/v1/project-recommendations/selection', { method: 'PUT', body: JSON.stringify({ report_id: reportId, project_id: projectId }) }),
   getProfileSettings: () => request<{ settings: UserProfileSettings }>('/api/v1/profile/settings'),
   saveProfileSettings: (input: { weekly_hours: number; expected_weeks: number; existing_experience: string }) => request<{ settings: UserProfileSettings }>('/api/v1/profile/settings', {
     method: 'PUT',
@@ -514,8 +609,75 @@ export const jobPilotAPI = {
     method: 'POST',
     body: JSON.stringify({ concept_id: conceptId, mode }),
   }),
+  listProfileSessions: () => request<{ sessions: ProfilePracticeSession[] }>('/api/v1/profile/sessions'),
+  getProfileSession: (id: string) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}`),
+  saveProfileAnswer: (id: string, questionId: string, answer: string) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}/answers`, { method: 'PUT', body: JSON.stringify({ question_id: questionId, answer }) }),
+  confirmProfileSession: (id: string) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}/confirm`, { method: 'POST' }),
   submitProfileSession: (id: string, answers: Array<{ question_id: string; answer: string }>) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}/submit`, {
     method: 'POST',
     body: JSON.stringify({ answers }),
   }),
+}
+
+export interface AgentMessageRecord { id: string; role: 'user' | 'assistant' | 'tool'; content: string; created_at: string }
+export interface AgentActionRecord { id: string; kind: string; arguments: Record<string, unknown>; summary: string; status: string }
+export interface AgentConversationRecord { id: string; title: string; status: 'idle' | 'running' | 'awaiting_confirmation'; updated_at: string; messages?: AgentMessageRecord[]; pending_action?: AgentActionRecord }
+export interface AgentStreamEvent { type: 'delta' | 'tool' | 'citation' | 'action' | 'done' | 'error'; text?: string; tool?: string; action?: AgentActionRecord; citation?: { source_type: string; source_id: string; quote: string }; code?: string }
+
+async function streamAgent(path: string, body: unknown, onEvent: (event: AgentStreamEvent) => void, mayRefresh = true): Promise<void> {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 210_000)
+  let idleExpired = false
+  let idleTimeout = window.setTimeout(() => { idleExpired = true; controller.abort() }, 60_000)
+  try {
+    const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+    if (response.status === 401 && mayRefresh) {
+      await refreshSession()
+      return streamAgent(path, body, onEvent, false)
+    }
+    if (!response.ok) { await parseResponse(response); return }
+    if (!response.body) throw new Error('当前连接不支持流式响应')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let finished = false
+    while (true) {
+      const { value, done } = await reader.read()
+      if (value?.length) {
+        window.clearTimeout(idleTimeout)
+        idleTimeout = window.setTimeout(() => { idleExpired = true; controller.abort() }, 60_000)
+      }
+      buffer += decoder.decode(value, { stream: !done })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) {
+        const line = frame.split(/\r?\n/).find((part) => part.startsWith('data: '))
+        if (!line) continue
+        const event = JSON.parse(line.slice(6)) as AgentStreamEvent
+        onEvent(event)
+        if (event.type === 'done') finished = true
+        if (event.type === 'error') throw new Error(event.text ?? 'Agent 执行失败')
+      }
+      if (done) break
+    }
+    if (!finished) throw new Error('Agent 连接中断，操作状态请刷新对话核对')
+  } catch (error) {
+    if (idleExpired) throw new Error('Agent 已超过 60 秒没有新进展，请刷新对话核对状态后重试')
+    if (controller.signal.aborted) throw new Error('Agent 等待超时，请刷新对话核对处理状态后重试')
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+    window.clearTimeout(idleTimeout)
+  }
+}
+
+export const agentAPI = {
+  list: () => request<AgentConversationRecord[]>('/api/v1/agent/conversations'),
+  get: (id: string) => request<AgentConversationRecord>(`/api/v1/agent/conversations/${id}`),
+  create: (page: string) => request<AgentConversationRecord>('/api/v1/agent/conversations', { method: 'POST', body: JSON.stringify({ page }) }),
+  delete: (id: string) => request<void>(`/api/v1/agent/conversations/${id}`, { method: 'DELETE' }),
+  send: (id: string, content: string, page: string, onEvent: (event: AgentStreamEvent) => void) => streamAgent(`/api/v1/agent/conversations/${id}/messages`, { content, page }, onEvent),
+  resolve: (id: string, actionId: string, approve: boolean, onEvent: (event: AgentStreamEvent) => void) => streamAgent(`/api/v1/agent/conversations/${id}/actions/${actionId}`, { approve }, onEvent),
 }

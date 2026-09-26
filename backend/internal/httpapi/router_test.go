@@ -37,6 +37,42 @@ type marketServiceStub struct {
 	err    error
 }
 
+type mutationLockerRecorder struct {
+	users    []uuid.UUID
+	released int
+}
+
+func (l *mutationLockerRecorder) Lock(_ context.Context, user uuid.UUID) (func(), error) {
+	l.users = append(l.users, user)
+	return func() { l.released++ }, nil
+}
+
+func TestUserMutationsAreLockedButAgentRequestsAreNotNested(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	user := uuid.New()
+	locker := &mutationLockerRecorder{}
+	router := gin.New()
+	group := router.Group("/api/v1")
+	group.Use(identity.Middleware(identity.DevResolver{DefaultUserID: user}), serializeUserMutations(locker))
+	group.POST("/jds", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	group.GET("/jds", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	group.POST("/agent/conversations/test/actions/test", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	for _, request := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/jds"},
+		{http.MethodGet, "/api/v1/jds"},
+		{http.MethodPost, "/api/v1/agent/conversations/test/actions/test"},
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(request.method, request.path, nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("%s %s: %d", request.method, request.path, response.Code)
+		}
+	}
+	if len(locker.users) != 1 || locker.users[0] != user || locker.released != 1 {
+		t.Fatalf("mutation lock not scoped to the write request: users=%v released=%d", locker.users, locker.released)
+	}
+}
+
 func (s marketServiceStub) Submit(context.Context, uuid.UUID, string) (market.JobDescription, error) {
 	return s.result, s.err
 }
@@ -63,6 +99,9 @@ func (s marketServiceStub) Retry(context.Context, uuid.UUID, uuid.UUID) (market.
 	return s.result, s.err
 }
 func (s marketServiceStub) RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error) {
+	return s.result, s.err
+}
+func (s marketServiceStub) RetryAbilityGrading(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error) {
 	return s.result, s.err
 }
 

@@ -8,9 +8,12 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,6 +34,7 @@ type MarketService interface {
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
 	Retry(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
 	RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
+	RetryAbilityGrading(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
 	ProfileCurrent(context.Context, uuid.UUID) (market.Profile, error)
 }
 
@@ -50,18 +54,35 @@ type ProfileService interface {
 	GetOverview(context.Context, uuid.UUID) (profile.Overview, error)
 	GetSettings(context.Context, uuid.UUID) (profile.Settings, error)
 	SaveSettings(context.Context, uuid.UUID, profile.Settings) (profile.Settings, error)
+	SetCapabilityLevel(context.Context, uuid.UUID, uuid.UUID, int) (profile.Capability, error)
 	StartSession(context.Context, uuid.UUID, profile.StartSessionInput) (profile.Session, error)
+	ListSessions(context.Context, uuid.UUID) ([]profile.Session, error)
+	SaveAnswer(context.Context, uuid.UUID, uuid.UUID, profile.AnswerInput) (profile.Session, error)
 	GetSession(context.Context, uuid.UUID, uuid.UUID) (profile.Session, error)
 	SubmitSession(context.Context, uuid.UUID, uuid.UUID, []profile.AnswerInput) (profile.Session, error)
+	ConfirmSession(context.Context, uuid.UUID, uuid.UUID) (profile.Session, error)
+}
+type KnowledgeGapsService interface {
+	Get(context.Context, uuid.UUID) (knowledgegaps.View, error)
+	Analyze(context.Context, uuid.UUID) (knowledgegaps.View, error)
+}
+type ProjectRecommendationsService interface {
+	Get(context.Context, uuid.UUID) (projectrecs.View, error)
+	Generate(context.Context, uuid.UUID, string) (projectrecs.View, error)
+	Select(context.Context, uuid.UUID, uuid.UUID, string) (projectrecs.View, error)
 }
 
 type Dependencies struct {
-	IdentityResolver   identity.Resolver
-	TargetService      TargetService
-	MarketService      MarketService
-	ModelConfigService ModelConfigService
-	ProfileService     ProfileService
-	Ready              func() error
+	AgentService                  AgentService
+	MutationLocker                mutationlock.Locker
+	IdentityResolver              identity.Resolver
+	TargetService                 TargetService
+	MarketService                 MarketService
+	ModelConfigService            ModelConfigService
+	ProfileService                ProfileService
+	KnowledgeGapsService          KnowledgeGapsService
+	ProjectRecommendationsService ProjectRecommendationsService
+	Ready                         func() error
 }
 
 func NewRouter(dependencies Dependencies) *gin.Engine {
@@ -83,7 +104,18 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 
 	api := router.Group("/api/v1")
 	api.Use(identity.Middleware(dependencies.IdentityResolver))
+	if dependencies.MutationLocker != nil {
+		api.Use(serializeUserMutations(dependencies.MutationLocker))
+	}
 	{
+		if dependencies.AgentService != nil {
+			api.GET("/agent/conversations", listAgentConversations(dependencies.AgentService))
+			api.POST("/agent/conversations", createAgentConversation(dependencies.AgentService))
+			api.GET("/agent/conversations/:id", getAgentConversation(dependencies.AgentService))
+			api.DELETE("/agent/conversations/:id", deleteAgentConversation(dependencies.AgentService))
+			api.POST("/agent/conversations/:id/messages", sendAgentMessage(dependencies.AgentService))
+			api.POST("/agent/conversations/:id/actions/:action_id", resolveAgentAction(dependencies.AgentService))
+		}
 		api.GET("/targets/current", currentTarget(dependencies.TargetService))
 		api.PUT("/targets/current", upsertCurrentTarget(dependencies.TargetService))
 		api.GET("/catalog/job-directions", jobCatalog(dependencies.TargetService))
@@ -96,6 +128,7 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 		api.DELETE("/jds/:id", deleteJD(dependencies.MarketService))
 		api.POST("/jds/:id/retry", retryJD(dependencies.MarketService))
 		api.POST("/jds/:id/ability-reviews/retry", retryAbilityReviews(dependencies.MarketService))
+		api.POST("/jds/:id/ability-grading/retry", retryAbilityGrading(dependencies.MarketService))
 		api.GET("/model-configs/deepseek", getDeepSeekConfig(dependencies.ModelConfigService))
 		api.PUT("/model-configs/deepseek", saveDeepSeekConfig(dependencies.ModelConfigService))
 		api.POST("/model-configs/deepseek/test", testDeepSeekConfig(dependencies.ModelConfigService))
@@ -104,6 +137,7 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 			api.GET("/profile", profileOverview(dependencies.ProfileService))
 			api.GET("/profile/settings", getProfileSettings(dependencies.ProfileService))
 			api.PUT("/profile/settings", saveProfileSettings(dependencies.ProfileService))
+			api.PUT("/profile/capabilities/:id/level", setProfileCapabilityLevel(dependencies.ProfileService))
 			api.GET("/profile/materials", listProfileMaterials(dependencies.ProfileService))
 			api.POST("/profile/materials/extract", extractProfileMaterialDocument())
 			api.POST("/profile/materials", createProfileMaterial(dependencies.ProfileService))
@@ -111,12 +145,42 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 			api.DELETE("/profile/materials/:id", deleteProfileMaterial(dependencies.ProfileService))
 			api.POST("/profile/materials/:id/confirm", confirmProfileMaterial(dependencies.ProfileService))
 			api.POST("/profile/sessions", startProfileSession(dependencies.ProfileService))
+			api.GET("/profile/sessions", listProfileSessions(dependencies.ProfileService))
 			api.GET("/profile/sessions/:id", getProfileSession(dependencies.ProfileService))
+			api.PUT("/profile/sessions/:id/answers", saveProfileAnswer(dependencies.ProfileService))
 			api.POST("/profile/sessions/:id/submit", submitProfileSession(dependencies.ProfileService))
+			api.POST("/profile/sessions/:id/confirm", confirmProfileSession(dependencies.ProfileService))
+		}
+		if dependencies.KnowledgeGapsService != nil {
+			api.GET("/knowledge-gaps", getKnowledgeGaps(dependencies.KnowledgeGapsService))
+			api.POST("/knowledge-gaps/analyze", analyzeKnowledgeGaps(dependencies.KnowledgeGapsService))
+		}
+		if dependencies.ProjectRecommendationsService != nil {
+			api.GET("/project-recommendations", getProjectRecommendations(dependencies.ProjectRecommendationsService))
+			api.POST("/project-recommendations", generateProjectRecommendations(dependencies.ProjectRecommendationsService))
+			api.PUT("/project-recommendations/selection", selectProjectRecommendation(dependencies.ProjectRecommendationsService))
 		}
 	}
 
 	return router
+}
+
+func serializeUserMutations(locker mutationlock.Locker) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/v1/agent/") {
+			c.Next()
+			return
+		}
+		release, err := locker.Lock(c.Request.Context(), identity.UserID(c))
+		if err != nil {
+			writeError(c, http.StatusServiceUnavailable, "mutation_lock_unavailable", "当前操作暂时无法执行，请重试")
+			c.Abort()
+			return
+		}
+		defer release()
+		c.Next()
+	}
 }
 
 func submitJDBatch(service MarketService) gin.HandlerFunc {
@@ -321,6 +385,22 @@ func retryAbilityReviews(service MarketService) gin.HandlerFunc {
 	}
 }
 
+func retryAbilityGrading(service MarketService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		jdID, err := uuid.Parse(c.Param("id"))
+		if err != nil {
+			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
+			return
+		}
+		result, err := service.RetryAbilityGrading(c, identity.UserID(c), jdID)
+		if err != nil {
+			handleError(c, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": result})
+	}
+}
+
 type modelConfigRequest struct {
 	Model  string `json:"model"`
 	APIKey string `json:"api_key"`
@@ -401,6 +481,8 @@ func handleError(c *gin.Context, err error) {
 		writeError(c, http.StatusConflict, "target_reselection_required", "原有岗位方向无法完整匹配岗位目录，请重新选择")
 	case errors.Is(err, market.ErrNotFound):
 		writeError(c, http.StatusNotFound, "jd_not_found", "没有找到这份 JD")
+	case errors.Is(err, market.ErrPrecondition):
+		writeError(c, http.StatusConflict, "jd_grading_not_retryable", "这份 JD 当前没有可重试的判级任务")
 	case errors.Is(err, market.ErrDuplicateJD):
 		var duplicate *market.DuplicateError
 		if errors.As(err, &duplicate) {
@@ -412,6 +494,14 @@ func handleError(c *gin.Context, err error) {
 		writeError(c, http.StatusBadRequest, "invalid_model_config", "DeepSeek 模型或 API Key 格式不正确")
 	case errors.Is(err, modelconfig.ErrNotConfigured):
 		writeError(c, http.StatusConflict, "model_not_configured", "请先配置 DeepSeek API Key")
+	case errors.Is(err, projectrecs.ErrNotReady):
+		writeError(c, http.StatusConflict, "recommendation_not_ready", "请先完成市场画像和用户画像")
+	case errors.Is(err, projectrecs.ErrConflict):
+		writeError(c, http.StatusConflict, "recommendation_conflict", "已有推荐任务正在运行，或报告已经更新")
+	case errors.Is(err, projectrecs.ErrNotFound):
+		writeError(c, http.StatusNotFound, "recommendation_not_found", "没有找到这个推荐项目")
+	case errors.Is(err, projectrecs.ErrInvalid):
+		writeError(c, http.StatusBadRequest, "invalid_recommendation_request", "推荐条件或项目选择无效")
 	default:
 		writeError(c, http.StatusInternalServerError, "internal_error", "服务暂时无法完成请求")
 	}

@@ -56,6 +56,9 @@ function errorMessage(error: unknown) {
 }
 
 function capabilitySource(capability: ProfileCapability) {
+  if (capability.level_source === 'manual') return '用户自行设置'
+  if (capability.level_source === 'initial') return '初始评估确认'
+  if (capability.level_source === 'validation') return '能力验证确认'
   if (capability.status === 'verified') return '能力验证'
   if (capability.status === 'evidence_backed') return '简历与经历证据'
   return '材料不足'
@@ -79,7 +82,9 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
   const [assessmentMode, setAssessmentMode] = useState<AssessmentMode>('overview')
   const [practiceMode, setPracticeMode] = useState<ProfilePracticeMode>('validation')
   const [session, setSession] = useState<ProfilePracticeSession | null>(null)
+  const [resumableSession, setResumableSession] = useState<ProfilePracticeSession | null>(null)
   const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [manualLevel, setManualLevel] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
@@ -112,9 +117,11 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
     () => abilities.find((ability) => ability.concept_id === selectedAbilityId) ?? null,
     [abilities, selectedAbilityId],
   )
+  useEffect(() => { if (selectedAbility) setManualLevel(selectedAbility.current_level) }, [selectedAbilityId])
   const requiredInfoCount = Number(Boolean(target)) * 2
     + Number(Boolean(settings.weekly_hours))
     + Number(Boolean(settings.expected_weeks))
+    + Number(Boolean(settings.existing_experience.trim()))
 
   const closeDrawer = () => {
     setDrawer(null)
@@ -139,9 +146,21 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
     setSelectedAbilityId(capability.concept_id)
     setAssessmentMode('overview')
     setSession(null)
+    setResumableSession(null)
     setAnswers({})
     setError('')
     setDrawer('ability')
+    void jobPilotAPI.listProfileSessions().then((response) => {
+      setResumableSession(response.sessions.find((item) => item.concept_id === capability.concept_id && item.status !== 'evaluated') ?? null)
+    }).catch(() => {})
+  }
+
+  const resumePractice = () => {
+    if (!resumableSession) return
+    setSession(resumableSession)
+    setPracticeMode(resumableSession.mode)
+    setAnswers(Object.fromEntries((resumableSession.answers ?? []).map((item) => [item.question_id, item.answer])))
+    setAssessmentMode('questions')
   }
 
   const openMaterial = (material?: ProfileMaterial) => {
@@ -274,7 +293,8 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
         session.questions.map((question) => ({ question_id: question.id, answer: answers[question.id]?.trim() ?? '' })),
       )
       setSession(response.session)
-      setAssessmentMode('result')
+      setAssessmentMode(response.session.status === 'clarifying' ? 'questions' : 'result')
+      if (response.session.status === 'clarifying') setAnswers((current) => ({ ...current, ...Object.fromEntries(response.session.answers?.map((item) => [item.question_id, item.answer]) ?? []) }))
       await refresh()
     } catch (submitError) {
       setError(errorMessage(submitError))
@@ -283,11 +303,24 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
     }
   }
 
+  const saveManualLevel = async () => {
+    if (!selectedAbility) return
+    setBusy(true); setError('')
+    try { await jobPilotAPI.setProfileCapabilityLevel(selectedAbility.concept_id, manualLevel); await refresh(); setNotice(`${selectedAbility.name} 已更正为 L${manualLevel}。`); closeDrawer() }
+    catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
+  }
+  const confirmPractice = async () => {
+    if (!session) return
+    setBusy(true); setError('')
+    try { const response = await jobPilotAPI.confirmProfileSession(session.id); setSession(response.session); await refresh(); setNotice(`能力等级已由你确认更新为 L${response.session.mode === 'initial' ? response.session.evaluation?.suggested_level : response.session.target_level}。`) }
+    catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
+  }
+
   const primaryAction = () => {
     if (activeTab === 'info') openInfo()
     if (activeTab === 'materials') openMaterial()
     if (activeTab === 'abilities') {
-      const pending = abilities.find((ability) => ability.current_level === 0) ?? abilities[0]
+      const pending = abilities.find((ability) => !ability.assessed) ?? abilities[0]
       if (pending) openAbility(pending)
     }
   }
@@ -310,7 +343,7 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
       <section className="profile-progress" aria-label="用户画像完成进度">
         <div className="progress-copy"><span className="eyebrow">画像完成度</span><strong>{loading ? '正在读取真实画像……' : `${assessedCount} / ${abilities.length} 项能力已评估`}</strong><p>{profile?.market_profile_ready ? `还剩 ${pendingCount} 项岗位能力需要补充证据或验证。` : abilities.length > 0 ? '市场画像尚未达到 JD 门槛，当前能力清单会随新 JD 继续更新。' : '请先补充市场画像，系统才能确定需要评估的岗位能力。'}</p></div>
         <div className="progress-meter" aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
-        <div className="profile-counts"><div><strong>{requiredInfoCount} / 4</strong><span>必要信息</span></div><div><strong>{profile?.material_count ?? 0}</strong><span>已有材料</span></div><div><strong>{pendingCount}</strong><span>待评估</span></div></div>
+        <div className="profile-counts"><div><strong>{requiredInfoCount} / 5</strong><span>必要信息</span></div><div><strong>{profile?.material_count ?? 0}</strong><span>已有材料</span></div><div><strong>{profile?.blocking_count ?? pendingCount}</strong><span>待判断要求</span></div></div>
       </section>
 
       <div className="market-tabs profile-tabs" role="tablist" aria-label="用户画像内容">
@@ -323,7 +356,7 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
         <div className="market-panel-head"><div><h2 id="profile-ability-title">当前目标需要的能力</h2><p>只显示当前目标相关能力；其他已评估结果继续保留。</p></div><span className="pending-summary">{pendingCount} 项待评估</span></div>
         {loading ? <div className="market-empty"><LoaderCircle className="spin" size={22} /><p>正在读取用户画像……</p></div>
           : abilities.length === 0 ? <div className="market-empty"><MessageSquareText size={24} /><h3>还没有可评估的岗位能力</h3><p>{profile?.market_profile_ready ? '市场画像中暂时没有能力数据。' : '完成市场画像和能力等级标准后，这里会显示真实能力清单。'}</p></div>
-            : <><div className="profile-ability-head" aria-hidden="true"><span>能力</span><span>用户当前等级</span><span>市场画像等级</span><span>判断来源</span><span>更新时间</span><span /></div><div className="profile-ability-list">{abilities.map((ability) => <button className={`profile-ability-row ${ability.current_level > 0 ? '' : 'is-pending'}`} type="button" key={ability.concept_id} onClick={() => openAbility(ability)}><strong>{ability.name}</strong><span>{ability.current_level > 0 ? <b className="level-chip">L{ability.current_level}</b> : <b className="pending-chip">待评估</b>}</span><span>{ability.market_level_ready ? <b className="target-level">L{ability.market_level}</b> : <b className="target-level">准备中</b>}</span><span className="ability-source">{capabilitySource(ability)}</span><span className="ability-updated">{formatDate(ability.updated_at)}</span><ChevronRight size={16} /></button>)}</div></>}
+            : <><div className="profile-ability-head" aria-hidden="true"><span>能力</span><span>用户当前等级</span><span>市场画像等级</span><span>判断来源</span><span>更新时间</span><span /></div><div className="profile-ability-list">{abilities.map((ability) => <button className={`profile-ability-row ${ability.assessed ? '' : 'is-pending'}`} type="button" key={ability.concept_id} onClick={() => openAbility(ability)}><strong>{ability.name}</strong><span>{ability.assessed ? <b className="level-chip">L{ability.current_level}</b> : <b className="pending-chip">待评估</b>}</span><span>{ability.market_level_ready ? <b className="target-level">L{ability.market_level}</b> : <b className="target-level">准备中</b>}</span><span className="ability-source">{capabilitySource(ability)}</span><span className="ability-updated">{formatDate(ability.updated_at)}</span><ChevronRight size={16} /></button>)}</div></>}
       </section>}
 
       {activeTab === 'info' && <section className="profile-info-grid" aria-label="必要信息">
@@ -344,12 +377,13 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
         <header className="drawer-header"><div><span>{drawer === 'ability' ? '岗位能力评估' : drawer === 'material' ? '补充判断依据' : '必要信息'}</span><h2 id="profile-drawer-title">{drawer === 'ability' ? selectedAbility?.name : drawer === 'material' ? (editingMaterial ? '编辑材料' : '添加简历或经历') : '当前必要信息'}</h2></div><button className="icon-button" type="button" onClick={closeDrawer} disabled={busy} aria-label="关闭抽屉"><X size={19} /></button></header>
 
         {drawer === 'ability' && selectedAbility && <div className="drawer-body ability-assessment">
-          <div className="ability-comparison"><div><span>用户当前等级</span><strong>{selectedAbility.current_level > 0 ? `L${selectedAbility.current_level}` : '待评估'}</strong></div><div><span>市场画像等级</span><strong>{selectedAbility.market_level_ready ? `L${selectedAbility.market_level}` : '准备中'}</strong></div></div>
+          <div className="ability-comparison"><div><span>用户当前等级</span><strong>{selectedAbility.assessed ? `L${selectedAbility.current_level}` : '待评估'}</strong></div><div><span>市场画像等级</span><strong>{selectedAbility.market_level_ready ? `L${selectedAbility.market_level}` : '准备中'}</strong></div></div>
           <section className="evidence-card"><span>现有判断依据</span>{selectedAbility.evidence.length > 0 ? selectedAbility.evidence.map((item) => <div className="profile-evidence-item" key={item.id}><p>“{item.quote}”</p><small>{item.reason} · 支持 L{item.level}</small></div>) : <p>现有材料还没有提供能够回链到原文的能力证据。</p>}<small>来源：{capabilitySource(selectedAbility)}</small></section>
           {error && <p className="form-error" role="alert">{error}</p>}
-          {assessmentMode === 'overview' && <section className="assessment-choice"><h3>{selectedAbility.current_level > 0 ? '继续验证或复习' : '选择补充方式'}</h3>{selectedAbility.current_level === 0 && <p>没有证据时不会直接记为 L0；可以先补材料，或通过多道技术与场景题验证。</p>}{selectedAbility.needs_validation && <button type="button" disabled={busy} onClick={() => startPractice('validation')}><MessageSquareText size={18} /><span><strong>验证下一级能力</strong><small>一次只验证一级，未通过不会降级</small></span><ChevronRight size={17} /></button>}<button type="button" disabled={busy} onClick={() => startPractice('review')}><RotateCw size={18} /><span><strong>生成复习题</strong><small>获得反馈，但不会修改能力等级</small></span><ChevronRight size={17} /></button>{busy && <p><LoaderCircle className="spin" size={16} /> 正在生成问题……</p>}</section>}
-          {assessmentMode === 'questions' && session && <section className="question-card profile-question-list"><span>{practiceMode === 'validation' ? `本次验证 L${session.base_level} → L${session.target_level}` : `本次复习 L${session.target_level}`}</span>{session.questions.map((question, index) => <label key={question.id}><strong>{index + 1}. {question.prompt}</strong><small>{question.dimension}</small><textarea value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} placeholder="结合原理、真实场景和你的处理过程回答……" /></label>)}<div className="drawer-actions"><button className="button" type="button" disabled={busy} onClick={() => setAssessmentMode('overview')}>返回</button><button className="button button-primary" type="button" disabled={busy || session.questions.some((question) => !(answers[question.id] ?? '').trim())} onClick={submitPractice}>{busy ? '评估中……' : '提交全部回答'}</button></div></section>}
-          {assessmentMode === 'result' && session?.evaluation && <section className="question-card profile-practice-result"><span>{session.level_updated ? '验证通过' : practiceMode === 'review' ? '复习完成' : '本次未通过'}</span><h3>{session.level_updated ? `能力已更新为 L${session.target_level}` : practiceMode === 'review' ? '本次结果不会修改等级' : '原能力等级保持不变'}</h3><p>{session.evaluation.summary}</p><strong>综合得分：{Math.round(session.evaluation.score * 100)}%</strong>{session.evaluation.question_results.map((result, index) => <div className="profile-question-result" key={result.question_id}><b>{result.passed ? '通过' : '需要补充'} · 第 {index + 1} 题</b><p>{result.feedback}</p></div>)}<div className="drawer-actions"><button className="button button-primary" type="button" onClick={closeDrawer}>完成</button></div></section>}
+          {assessmentMode === 'overview' && resumableSession && <section className="assessment-choice"><p>上次问答尚未完成，已保存的回答可以继续使用。</p><button className="button" type="button" onClick={resumePractice}>继续上次问答</button></section>}
+          {assessmentMode === 'overview' && <section className="assessment-choice"><h3>{selectedAbility.assessed ? '继续验证或复习' : '选择补充方式'}</h3>{!selectedAbility.assessed && <p>未评估与明确设置的 L0 不同。可先补材料、完成最多 3 题初评，或自行设置等级。</p>}<label>自行设置或更正等级<select value={manualLevel} onChange={(event) => setManualLevel(Number(event.target.value))}>{[0, 1, 2, 3, 4, 5].map((level) => <option value={level} key={level}>L{level} · {selectedAbility.levels.find((item) => item.level === level)?.description ?? ''}</option>)}</select></label><button className="button" type="button" disabled={busy} onClick={saveManualLevel}>确认设置 L{manualLevel}</button>{!selectedAbility.assessed && <button type="button" disabled={busy} onClick={() => startPractice('initial')}><MessageSquareText size={18} /><span><strong>初始能力评估</strong><small>最多 3 题，结果由你确认</small></span><ChevronRight size={17} /></button>}{selectedAbility.assessed && selectedAbility.current_level < 5 && <button type="button" disabled={busy} onClick={() => startPractice('validation')}><MessageSquareText size={18} /><span><strong>验证下一级能力</strong><small>6 道核心题，最多 3 道追问；通过后仍需你确认</small></span><ChevronRight size={17} /></button>}<button type="button" disabled={busy} onClick={() => startPractice('review')}><RotateCw size={18} /><span><strong>生成复习题</strong><small>提示、参考答案和反馈；不改变等级</small></span><ChevronRight size={17} /></button>{busy && <p><LoaderCircle className="spin" size={16} /> 正在生成问题……</p>}</section>}
+          {assessmentMode === 'questions' && session && <section className="question-card profile-question-list"><span>{practiceMode === 'validation' ? `本次验证 L${session.base_level} → L${session.target_level}` : practiceMode === 'initial' ? '初始能力评估' : `本次复习 L${session.target_level}`}</span>{session.questions.map((question, index) => <label key={question.id}><strong>{index + 1}. {question.prompt}</strong><small>{question.dimension}</small>{practiceMode === 'review' && <details><summary>提示与参考答案</summary><p>{question.hint}</p><p>{question.reference}</p><p>{question.explanation}</p></details>}<textarea value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} onBlur={() => { if ((answers[question.id] ?? '').trim()) void jobPilotAPI.saveProfileAnswer(session.id, question.id, answers[question.id]).catch(() => {}) }} placeholder="结合原理、真实场景和你的处理过程回答……" /></label>)}<div className="drawer-actions"><button className="button" type="button" disabled={busy} onClick={() => setAssessmentMode('overview')}>返回</button><button className="button button-primary" type="button" disabled={busy || session.questions.some((question) => !(answers[question.id] ?? '').trim())} onClick={submitPractice}>{busy ? '评估中……' : '提交全部回答'}</button></div></section>}
+          {assessmentMode === 'result' && session?.evaluation && <section className="question-card profile-practice-result"><span>{session.level_updated ? '已确认等级' : practiceMode === 'review' ? '复习完成' : '评估反馈'}</span><h3>{session.level_updated ? '能力等级已更新' : practiceMode === 'review' ? '本次结果不会修改等级' : session.evaluation.verdict === 'pass' ? `建议升至 L${session.target_level}` : practiceMode === 'initial' ? `建议初始等级 L${session.evaluation.suggested_level ?? 0}` : '原能力等级保持不变'}</h3><p>{session.evaluation.summary}</p>{session.evaluation.question_results.map((result, index) => <div className="profile-question-result" key={result.question_id}><b>{result.passed ? '通过' : '需要补充'} · 第 {index + 1} 题</b><p>{result.feedback}</p></div>)}<div className="drawer-actions">{!session.level_updated && (practiceMode === 'initial' && session.evaluation.suggested_level !== undefined || practiceMode === 'validation' && session.evaluation.verdict === 'pass') && <button className="button button-primary" type="button" disabled={busy} onClick={confirmPractice}>确认更新等级</button>}<button className="button" type="button" onClick={closeDrawer}>完成</button></div></section>}
         </div>}
 
         {drawer === 'material' && <div className="drawer-body material-form"><label className={`upload-card ${busy ? 'is-busy' : ''}`}><input type="file" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" disabled={busy} onChange={extractMaterialFile} /><Upload size={21} /><strong>{busy ? '正在提取文件文字……' : selectedFileName ? `已读取：${selectedFileName}` : '点击选择 PDF、DOCX、TXT 或 Markdown'}</strong><span>系统只在内存中提取文字，不保存原文件；提取后请检查内容。</span></label><label>材料类型<select value={materialType} onChange={(event) => setMaterialType(event.target.value as ProfileMaterialType)}><option value="resume">简历文本</option><option value="experience">经历自述</option></select></label><label>材料标题<input value={materialTitle} maxLength={120} onChange={(event) => setMaterialTitle(event.target.value)} placeholder="例如：后端开发实习简历" /></label><label htmlFor="material-text">完整内容</label><textarea id="material-text" value={materialText} onChange={(event) => setMaterialText(event.target.value)} placeholder="选择文件自动提取文字，或直接粘贴简历、项目经历和科研经历……" />{error && <p className="form-error" role="alert">{error}</p>}<div className="drawer-actions"><button className="button" type="button" disabled={busy} onClick={closeDrawer}>取消</button><button className="button button-primary" type="button" disabled={busy || materialTitle.trim().length === 0 || materialText.trim().length < 20} onClick={saveMaterial}>{busy ? '处理中……' : <>保存草稿 <ArrowRight size={15} /></>}</button></div></div>}

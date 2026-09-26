@@ -18,6 +18,7 @@ var (
 	ErrValidation    = errors.New("invalid job description")
 	ErrInvalidJDText = errors.New("invalid JD text")
 	ErrDuplicateJD   = errors.New("duplicate job description")
+	ErrPrecondition  = errors.New("job description is not eligible for this operation")
 )
 
 const MaxBatchSize = 50
@@ -180,6 +181,7 @@ type Repository interface {
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
 	RetryAnalysis(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error)
 	RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error)
+	RetryAbilityGrading(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error)
 	ProfileByTarget(context.Context, uuid.UUID, uuid.UUID) (Profile, error)
 }
 
@@ -295,6 +297,10 @@ func (s *Service) Delete(ctx context.Context, userID, jdID uuid.UUID) error {
 
 func (s *Service) RetryAbilityReviews(ctx context.Context, userID, jdID uuid.UUID) (JobDescription, error) {
 	return s.repository.RetryAbilityReviews(ctx, userID, jdID)
+}
+
+func (s *Service) RetryAbilityGrading(ctx context.Context, userID, jdID uuid.UUID) (JobDescription, error) {
+	return s.repository.RetryAbilityGrading(ctx, userID, jdID)
 }
 
 func canonicalRawText(value string) string {

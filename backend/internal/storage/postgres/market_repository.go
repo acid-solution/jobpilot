@@ -376,6 +376,29 @@ func (r *MarketRepository) RetryAbilityReviews(ctx context.Context, userID, jdID
 	return r.FindByID(ctx, userID, jdID)
 }
 
+func (r *MarketRepository) RetryAbilityGrading(ctx context.Context, userID, jdID uuid.UUID) (market.JobDescription, error) {
+	result, err := r.database.ExecContext(ctx, `UPDATE jd_ability_level_jobs job
+		SET status='queued',attempts=0,next_attempt_at=NOW(),last_error=NULL,
+		    lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,updated_at=NOW()
+		FROM job_descriptions jd
+		WHERE job.job_description_id=jd.id AND jd.id=$1 AND jd.user_id=$2
+		  AND jd.status='included' AND jd.validation_status='valid' AND job.status='failed'`, jdID, userID)
+	if err != nil {
+		return market.JobDescription{}, fmt.Errorf("retry JD ability grading: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		var exists bool
+		if err := r.database.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM job_descriptions WHERE id=$1 AND user_id=$2)`, jdID, userID).Scan(&exists); err != nil {
+			return market.JobDescription{}, err
+		}
+		if !exists {
+			return market.JobDescription{}, market.ErrNotFound
+		}
+		return market.JobDescription{}, market.ErrPrecondition
+	}
+	return r.FindByID(ctx, userID, jdID)
+}
+
 func (r *MarketRepository) RetryAnalysis(ctx context.Context, userID, jdID uuid.UUID) (market.JobDescription, error) {
 	transaction, err := r.database.BeginTx(ctx, nil)
 	if err != nil {

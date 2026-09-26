@@ -22,6 +22,11 @@ type Config struct {
 	DevUserID                      uuid.UUID
 	CredentialEncryptionKey        []byte
 	DeepSeekBaseURL                string
+	EmbeddingBaseURL               string
+	PlatformEmbeddingAPIKey        string
+	EmbeddingEnabled               bool
+	AgentEnabled                   bool
+	GitHubToken                    string
 	AbilityReviewEnabled           bool
 	JDAbilityGradingEnabled        bool
 	JobClassificationReviewEnabled bool
@@ -70,6 +75,14 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, errors.New("JOB_CLASSIFICATION_REVIEW_ENABLED must be true or false")
 	}
+	embeddingEnabled, err := strconv.ParseBool(valueOrDefault("EMBEDDING_ENABLED", "false"))
+	if err != nil {
+		return Config{}, errors.New("EMBEDDING_ENABLED must be true or false")
+	}
+	agentEnabled, err := strconv.ParseBool(valueOrDefault("AGENT_ENABLED", "true"))
+	if err != nil {
+		return Config{}, errors.New("AGENT_ENABLED must be true or false")
+	}
 	userDailyLimit, err := nonNegativeInt("ABILITY_REVIEW_USER_DAILY_LIMIT", 3)
 	if err != nil {
 		return Config{}, err
@@ -89,6 +102,11 @@ func Load() (Config, error) {
 		DevUserID:                      devUserID,
 		CredentialEncryptionKey:        encryptionKey,
 		DeepSeekBaseURL:                valueOrDefault("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+		EmbeddingBaseURL:               valueOrDefault("EMBEDDING_BASE_URL", ""),
+		PlatformEmbeddingAPIKey:        os.Getenv("PLATFORM_EMBEDDING_API_KEY"),
+		EmbeddingEnabled:               embeddingEnabled,
+		AgentEnabled:                   agentEnabled,
+		GitHubToken:                    os.Getenv("GITHUB_TOKEN"),
 		AbilityReviewEnabled:           reviewEnabled,
 		JDAbilityGradingEnabled:        gradingEnabled,
 		JobClassificationReviewEnabled: classificationReviewEnabled,

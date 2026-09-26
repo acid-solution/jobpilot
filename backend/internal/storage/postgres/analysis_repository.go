@@ -209,6 +209,9 @@ func (r *AnalysisRepository) Complete(ctx context.Context, job jdanalysis.Job, r
 		return fmt.Errorf("begin completion transaction: %w", err)
 	}
 	defer transaction.Rollback()
+	if err := lockUserMutationTx(ctx, transaction, job.UserID); err != nil {
+		return err
+	}
 
 	claim, err := transaction.ExecContext(ctx, `
 		UPDATE analysis_jobs
@@ -262,6 +265,7 @@ func (r *AnalysisRepository) Complete(ctx context.Context, job jdanalysis.Job, r
 		    responsibilities = $5, ability_mentions = $6, conditions = $7,
 		    document_type = $8, validation_status = $9, validation_reason = $10,
 		    analysis_provider = $11, analysis_model = $12, analysis_prompt_version = $13,
+		    normalization_prompt_version = CASE WHEN $27 THEN $13 ELSE '' END,
 		    analysis_completed_at = NOW(), status = $14, relevance_reason = $15,
 		    primary_category = $16, secondary_category = $17,
 		    classification_review_decision = $18, classification_review_reason = $19,
@@ -276,7 +280,7 @@ func (r *AnalysisRepository) Complete(ctx context.Context, job jdanalysis.Job, r
 		result.DocumentType, result.ValidationStatus, result.ValidationReason,
 		result.Provider, result.Model, result.PromptVersion, jdStatus, relevanceReason,
 		primaryCategory, secondaryCategory, reviewDecision, reviewReason, reviewProvider, reviewModel,
-		reviewPromptVersion, reviewRequestID, reviewInputTokens, reviewOutputTokens, job.UserID,
+		reviewPromptVersion, reviewRequestID, reviewInputTokens, reviewOutputTokens, job.UserID, result.VectorNormalized,
 	); err != nil {
 		return fmt.Errorf("save JD analysis: %w", err)
 	}

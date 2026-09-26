@@ -78,7 +78,7 @@ export function SettingsPage() {
       <section className="settings-card">
         <div className="settings-card-head">
           <span className="settings-provider-icon"><KeyRound size={20} /></span>
-          <div><h2>DeepSeek</h2><p>用于 JD 基础解析，费用由你的 DeepSeek 账号承担。</p></div>
+          <div><h2>DeepSeek</h2><p>用于 JD 分析、项目推荐和面试问答，费用由你的 DeepSeek 账号承担。</p></div>
           <span className={config?.configured ? 'config-state is-ready' : 'config-state'}>
             {loading ? '读取中' : config?.configured ? '已配置' : '未配置'}
           </span>

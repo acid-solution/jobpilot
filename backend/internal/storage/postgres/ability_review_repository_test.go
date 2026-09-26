@@ -17,7 +17,7 @@ func TestNormalizeAbilityNameUnifiesCommonSeparators(t *testing.T) {
 
 func TestValidateReviewResultRequiresExactSixLevels(t *testing.T) {
 	catalog := []abilityreview.CatalogAbility{{Code: "ability-agent", CategoryCode: "ability-category-07"}}
-	valid := abilityreview.Result{Decision: "approve_new", Reason: "独立框架", NewAbility: abilityreview.NewAbility{Name: "AutoGen", CategoryCode: "ability-category-07", Definition: "多智能体框架", Levels: []abilityreview.Level{{0, "未学习"}, {1, "了解"}, {2, "基础使用"}, {3, "独立开发"}, {4, "复杂场景"}, {5, "体系设计"}}}}
+	valid := abilityreview.Result{Decision: "approve_new", Reason: "独立框架", NewAbility: abilityreview.NewAbility{Name: "AutoGen", CategoryCode: "ability-category-07", Definition: "多智能体框架", Levels: []abilityreview.Level{{Level: 0, Description: "未学习"}, {Level: 1, Description: "了解"}, {Level: 2, Description: "基础使用"}, {Level: 3, Description: "独立开发"}, {Level: 4, Description: "复杂场景"}, {Level: 5, Description: "体系设计"}}}}
 	if err := validateReviewResult(valid, catalog); err != nil {
 		t.Fatalf("valid result rejected: %v", err)
 	}

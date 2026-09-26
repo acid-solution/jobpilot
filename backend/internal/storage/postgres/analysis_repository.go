@@ -553,12 +553,12 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 			if err := transaction.QueryRowContext(ctx, `
 				INSERT INTO job_description_ability_requirement_options (
 					requirement_id, ability_id, raw_label, qualifier, evidence, required_level, sort_order,
-					resolution_status, candidate_metadata
+					resolution_status, candidate_metadata, normalization_reason
 				) VALUES (
 					$1, (SELECT id FROM abilities WHERE code = NULLIF($2, '') AND is_active),
-					$3, $4, $5, $6, $7, CASE WHEN $2='' THEN 'pending_review' ELSE 'resolved' END, $8
+					$3, $4, $5, $6, $7, CASE WHEN $2='' THEN 'pending_review' ELSE 'resolved' END, $8, $9
 				) RETURNING id`, requirementID, option.CatalogCode, option.RawLabel, option.Qualifier,
-				option.Evidence, option.RequiredLevel, optionIndex+1, metadata).Scan(&optionID); err != nil {
+				option.Evidence, option.RequiredLevel, optionIndex+1, metadata, option.NormalizationReason).Scan(&optionID); err != nil {
 				return classificationOutcome{}, fmt.Errorf("save JD ability requirement option: %w", err)
 			}
 			if option.CatalogCode == "" {
@@ -571,6 +571,9 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 		return classificationOutcome{}, err
 	}
 	if outcome.status == "included" {
+		if err := enqueueJDResultAliases(ctx, transaction, job.UserID, job.JobDescriptionID, result); err != nil {
+			return classificationOutcome{}, err
+		}
 		for _, item := range pending {
 			if err := enqueueAbilityReview(ctx, transaction, job.UserID, item); err != nil {
 				return classificationOutcome{}, err

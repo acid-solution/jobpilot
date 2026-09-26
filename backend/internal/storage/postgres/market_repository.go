@@ -222,7 +222,7 @@ func (r *MarketRepository) UpdateRawText(ctx context.Context, userID, jdID uuid.
 	if _, err = transaction.ExecContext(ctx, `DELETE FROM jd_ability_level_assessments WHERE job_description_id=$1`, jdID); err != nil {
 		return market.JobDescription{}, fmt.Errorf("clear JD ability levels: %w", err)
 	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM ability_review_requests request WHERE request.status<>'succeeded' AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.review_request_id=request.id)`); err != nil {
+	if _, err = transaction.ExecContext(ctx, `DELETE FROM ability_review_requests request WHERE request.review_type='ability' AND request.status<>'succeeded' AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.review_request_id=request.id)`); err != nil {
 		return market.JobDescription{}, fmt.Errorf("clear orphaned ability reviews: %w", err)
 	}
 	_, err = transaction.ExecContext(ctx, `UPDATE job_descriptions SET raw_text=$3,raw_text_hash=$4,status='processing',title=NULL,company=NULL,primary_category=NULL,secondary_category=NULL,relevance_reason=NULL,conditions=NULL,employment_type='',responsibilities='[]'::jsonb,ability_mentions='[]'::jsonb,analysis_provider=NULL,analysis_model=NULL,analysis_prompt_version=NULL,document_type=NULL,validation_status='pending',validation_reason=NULL,updated_at=NOW() WHERE id=$1 AND user_id=$2`, jdID, userID, rawText, rawTextHash)
@@ -265,7 +265,7 @@ func (r *MarketRepository) Delete(ctx context.Context, userID, jdID uuid.UUID) e
 	if count, _ := result.RowsAffected(); count == 0 {
 		return market.ErrNotFound
 	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM ability_review_requests request WHERE request.status<>'succeeded' AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.review_request_id=request.id)`); err != nil {
+	if _, err = transaction.ExecContext(ctx, `DELETE FROM ability_review_requests request WHERE request.review_type='ability' AND request.status<>'succeeded' AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.review_request_id=request.id)`); err != nil {
 		return fmt.Errorf("clear orphaned ability reviews: %w", err)
 	}
 	if err = transaction.Commit(); err != nil {

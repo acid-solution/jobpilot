@@ -65,6 +65,7 @@ type AbilityRequirementOption struct {
 	Evidence                string
 	RequiredLevel           *int
 	Candidate               *AbilityCandidate
+	NormalizationReason     string
 }
 
 type AbilityCandidate struct {
@@ -170,6 +171,7 @@ type ClassificationReviewResult struct {
 type Result struct {
 	VectorNormalized     bool                    `json:"-"`
 	OriginalOptions      []AbilityOptionSnapshot `json:"-"`
+	AliasProposals       []AbilityAliasProposal  `json:"-"`
 	DocumentType         DocumentType
 	ValidationStatus     ValidationStatus
 	ValidationReason     string
@@ -192,6 +194,10 @@ type AbilityOptionSnapshot struct {
 	AbilityID       uuid.UUID
 	ReviewRequestID uuid.UUID
 	Resolution      string
+}
+
+type AbilityAliasProposal struct {
+	CatalogCode, Label, Evidence, Reason string
 }
 
 type Job struct {

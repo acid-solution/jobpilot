@@ -10,6 +10,7 @@ import (
 )
 
 const PromptVersion = "ability-review-v2"
+const AliasPromptVersion = "ability-alias-review-v1"
 
 var (
 	ErrNoRequest = errors.New("no claimable ability review")
@@ -44,6 +45,8 @@ type Input struct {
 	NearestCandidateCodes []string
 	Evidence              []string
 	Catalog               []CatalogAbility
+	ReviewType            string
+	TargetAbilityCode     string
 }
 
 type Level struct {
@@ -70,6 +73,7 @@ type Result struct {
 	ProviderRequestID   string
 	InputTokens         int
 	OutputTokens        int
+	ContextIndependent  bool `json:"context_independent"`
 }
 
 type Reviewer interface {

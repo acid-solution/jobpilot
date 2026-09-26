@@ -116,11 +116,13 @@ type CapabilityInput struct {
 	Levels      []LevelDefinition `json:"levels"`
 }
 type EvidenceDraft struct {
-	AbilityID  uuid.UUID `json:"concept_id"`
-	Level      int       `json:"level"`
-	Quote      string    `json:"quote"`
-	Reason     string    `json:"reason"`
-	Confidence float64   `json:"confidence"`
+	AbilityID     uuid.UUID `json:"concept_id"`
+	Level         int       `json:"level"`
+	Quote         string    `json:"quote"`
+	Reason        string    `json:"reason"`
+	Confidence    float64   `json:"confidence"`
+	RawLabel      string    `json:"raw_label,omitempty"`
+	MappingReason string    `json:"mapping_reason,omitempty"`
 }
 type Question struct {
 	ID          string `json:"id"`
@@ -458,6 +460,9 @@ func validateEvidenceDrafts(source string, inputs []CapabilityInput, drafts []Ev
 		}
 		if draft.Reason == "" || draft.Confidence < 0 || draft.Confidence > 1 {
 			return fmt.Errorf("evidence %d reason or confidence is invalid", index+1)
+		}
+		if draft.RawLabel != "" && (len([]rune(draft.RawLabel)) > 150 || !strings.Contains(draft.Quote, draft.RawLabel) || strings.TrimSpace(draft.MappingReason) == "") {
+			return fmt.Errorf("evidence %d has an invalid original ability label or mapping reason", index+1)
 		}
 		seen[draft.AbilityID] = true
 	}

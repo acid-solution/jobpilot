@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilityidentity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/embedding"
 	"github.com/google/uuid"
-	"golang.org/x/text/unicode/norm"
 )
 
 type AbilityCandidateSearch interface {
@@ -26,13 +25,7 @@ type VectorNormalizer struct {
 }
 
 func normalizedLabel(s string) string {
-	s = norm.NFKC.String(strings.ToLower(strings.TrimSpace(s)))
-	return strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) || r == '-' || r == '_' || r == '·' {
-			return -1
-		}
-		return r
-	}, s)
+	return abilityidentity.NormalizeName(s)
 }
 
 type pendingOption struct {
@@ -56,6 +49,7 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 		return result, nil
 	}
 	byExact := make(map[string]AbilityOption)
+	result.AliasProposals = nil
 	byCode := make(map[string]AbilityOption)
 	for _, a := range catalog.Abilities {
 		byCode[a.Code] = a
@@ -72,6 +66,7 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 				option.CatalogCode = a.Code
 				option.AbilityName = a.Name
 				option.Candidate = nil
+				option.NormalizationReason = ""
 				continue
 			}
 			pending = append(pending, pendingOption{Requirement: ri, Option: oi, Label: option.RawLabel, Qualifier: option.Qualifier, Evidence: option.Evidence})
@@ -158,6 +153,8 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 			option.CatalogCode = a.Code
 			option.AbilityName = a.Name
 			option.Candidate = nil
+			option.NormalizationReason = d.Reason
+			result.AliasProposals = append(result.AliasProposals, AbilityAliasProposal{CatalogCode: a.Code, Label: option.RawLabel, Evidence: option.Evidence, Reason: d.Reason})
 		case "request_new":
 			candidate := d.Candidate
 			if candidate == nil {

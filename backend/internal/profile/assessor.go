@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const assessmentPromptVersion = "profile-evidence-v1"
+const assessmentPromptVersion = "profile-evidence-v2"
 
 type CredentialProvider interface {
 	Credentials(context.Context, uuid.UUID) (modelconfig.Credentials, error)
@@ -97,14 +97,15 @@ func (a *ModelAssessor) ExtractEvidence(ctx context.Context, userID uuid.UUID, m
 当前目标岗位需要的能力及 L0-L5 标准：
 %s
 
-JSON：{"evidence":[{"concept_id":"能力 UUID","level":2,"quote":"材料逐字原文","reason":"该原文为何达到对应等级","confidence":0.82}]}
+JSON：{"evidence":[{"concept_id":"能力 UUID","level":2,"quote":"材料逐字原文","reason":"该原文为何达到对应等级","confidence":0.82,"raw_label":"证据中的技术能力短语","mapping_reason":"该短语为何在本材料中对应此能力"}]}
 
 要求：
 1. 只返回材料确实提供了可验证行为、产出、责任或技术细节的能力；仅列出技术名、兴趣、自评“熟悉/精通”不能单独证明等级。
 2. quote 必须逐字存在于材料原文，不能改写、拼接或引用标题。
 3. level 必须对照该能力自己的标准，只能为 L1-L5；没有证据就不要返回该能力。
 4. 同一 concept_id 最多一项；材料有多段证据时选择最能支持最高可信等级的一段。
-5. 不评价当前目录之外的能力，不从学校、公司或项目名称猜测能力。`, material.Type, material.Title, material.Text, catalog)
+5. 不评价当前目录之外的能力，不从学校、公司或项目名称猜测能力。
+6. raw_label 必须是 quote 中逐字出现的简短技术能力名称，不是整句职责，不可自己造同义词；无法提取时留空。填写时必须提供 mapping_reason，区别于能力判级的 reason。仅判断本材料中的关联，不直接批准公共别名。`, material.Type, material.Title, material.Text, catalog)
 	var output struct {
 		Evidence []EvidenceDraft `json:"evidence"`
 	}

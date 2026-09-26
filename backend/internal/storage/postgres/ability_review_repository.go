@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilityidentity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/abilityreview"
 	"github.com/google/uuid"
-	"golang.org/x/text/unicode/norm"
 )
 
 type AbilityReviewQuotaLimits struct {
@@ -47,13 +46,7 @@ func (r *AbilityReviewRepository) SetConfigurationBlocked(ctx context.Context, b
 }
 
 func NormalizeAbilityName(value string) string {
-	value = strings.ToLower(norm.NFKC.String(strings.TrimSpace(value)))
-	return strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) || strings.ContainsRune("-_.:/\\", r) {
-			return -1
-		}
-		return r
-	}, value)
+	return abilityidentity.NormalizeName(value)
 }
 
 func (r *AbilityReviewRepository) RecoverExpired(ctx context.Context) (int64, error) {
@@ -82,10 +75,11 @@ func (r *AbilityReviewRepository) Claim(ctx context.Context, lease time.Duration
 	RETURNING request.id, request.initiated_by_user_id, request.lease_token, request.attempts,
 	 request.max_attempts, request.candidate_key, request.normalized_name, request.proposed_name,
 	 request.proposed_category_code, request.proposed_aliases, request.proposed_definition,
-	 request.application_reason, request.nearest_candidate_codes`, token, lease.Milliseconds()).Scan(
+	 request.application_reason, request.nearest_candidate_codes,request.review_type,
+	 COALESCE((SELECT code FROM abilities WHERE id=request.target_ability_id),'')`, token, lease.Milliseconds()).Scan(
 		&input.ID, &input.UserID, &input.LeaseToken, &input.Attempts, &input.MaxAttempts,
 		&input.CandidateKey, &input.NormalizedName, &input.Name, &input.CategoryCode,
-		&aliases, &input.Definition, &input.ApplicationReason, &nearest)
+		&aliases, &input.Definition, &input.ApplicationReason, &nearest, &input.ReviewType, &input.TargetAbilityCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return input, abilityreview.ErrNoRequest
 	}
@@ -94,7 +88,11 @@ func (r *AbilityReviewRepository) Claim(ctx context.Context, lease time.Duration
 	}
 	_ = json.Unmarshal(aliases, &input.Aliases)
 	_ = json.Unmarshal(nearest, &input.NearestCandidateCodes)
-	input.Evidence, err = r.loadEvidence(ctx, input.ID)
+	if input.ReviewType == "alias" {
+		input.Evidence, err = r.loadAliasEvidence(ctx, input.ID)
+	} else {
+		input.Evidence, err = r.loadEvidence(ctx, input.ID)
+	}
 	if err != nil {
 		return input, err
 	}
@@ -157,6 +155,9 @@ func (r *AbilityReviewRepository) Heartbeat(ctx context.Context, input abilityre
 }
 
 func (r *AbilityReviewRepository) ResolveWithoutModel(ctx context.Context, input abilityreview.Input) (bool, error) {
+	if input.ReviewType == "alias" {
+		return r.resolveAliasWithoutModel(ctx, input)
+	}
 	abilityID, ok, err := findMatchingAbility(ctx, r.database, input.NormalizedName)
 	if err != nil || !ok {
 		return false, err
@@ -181,7 +182,7 @@ func (r *AbilityReviewRepository) ReserveUsage(ctx context.Context, input abilit
 	}
 	var userCount, globalCount int
 	query := `SELECT COUNT(*) FILTER (WHERE user_id=$1), COUNT(*) FROM platform_model_usage
-		WHERE purpose='ability_review' AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`
+		WHERE purpose IN ('ability_review','ability_alias_review') AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`
 	if err = tx.QueryRowContext(ctx, query, input.UserID).Scan(&userCount, &globalCount); err != nil {
 		return uuid.Nil, time.Time{}, err
 	}
@@ -202,8 +203,12 @@ func (r *AbilityReviewRepository) ReserveUsage(ctx context.Context, input abilit
 		return uuid.Nil, next, abilityreview.ErrQuota
 	}
 	usageID := uuid.New()
+	purpose := "ability_review"
+	if input.ReviewType == "alias" {
+		purpose = "ability_alias_review"
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO platform_model_usage(id,request_id,user_id,purpose,provider,model,status)
-		VALUES($1,$2,$3,'ability_review','deepseek',$4,'dispatched')`, usageID, input.ID, input.UserID, model)
+		VALUES($1,$2,$3,$5,'deepseek',$4,'dispatched')`, usageID, input.ID, input.UserID, model, purpose)
 	if err != nil {
 		return uuid.Nil, time.Time{}, err
 	}
@@ -215,6 +220,9 @@ func quotaReached(used, limit int) bool {
 }
 
 func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityreview.Input, result abilityreview.Result, usageID uuid.UUID) error {
+	if input.ReviewType == "alias" {
+		return r.completeAliasReview(ctx, input, result, usageID)
+	}
 	if err := validateReviewResult(result, input.Catalog); err != nil {
 		return r.Fail(ctx, input, usageID, "model_invalid_response", input.Attempts < input.MaxAttempts)
 	}
@@ -287,6 +295,11 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 		}
 		if err != nil {
 			return err
+		}
+		if result.Decision == "reuse_existing" {
+			if err := enqueueAliasesForResolvedReview(ctx, tx, input.ID, abilityID, result.Reason); err != nil {
+				return err
+			}
 		}
 	}
 	var resolved any = nil
@@ -376,7 +389,7 @@ func nonConflictingAbilityAliases(ctx context.Context, q queryer, name string, a
 }
 
 func findMatchingAbility(ctx context.Context, q queryer, normalized string) (uuid.UUID, bool, error) {
-	rows := q.QueryRowContext(ctx, `SELECT id FROM abilities WHERE is_active AND (normalized_name=$1 OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(aliases)='array' THEN aliases ELSE '[]'::jsonb END) alias WHERE lower(regexp_replace(alias,'[[:space:]_.:/\\-]+','','g'))=$1)) LIMIT 1`, normalized)
+	rows := q.QueryRowContext(ctx, `SELECT id FROM abilities WHERE is_active AND (normalize_ability_name(name)=$1 OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(aliases)='array' THEN aliases ELSE '[]'::jsonb END) alias WHERE normalize_ability_name(alias)=$1)) LIMIT 1`, normalized)
 	var id uuid.UUID
 	err := rows.Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -79,7 +79,7 @@ func (r *JDNormalizationRepository) LoadNormalization(ctx context.Context, job j
 		option.id,option.raw_label,option.qualifier,option.evidence,option.required_level,
 		COALESCE(ability.code,''),COALESCE(ability.name,''),option.candidate_metadata,
 		COALESCE(option.ability_id,'00000000-0000-0000-0000-000000000000'::uuid),
-		option.resolution_status,
+		option.resolution_status,option.normalization_reason,
 		COALESCE(option.review_request_id,'00000000-0000-0000-0000-000000000000'::uuid)
 		FROM job_description_ability_requirements requirement
 		JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id
@@ -97,7 +97,7 @@ func (r *JDNormalizationRepository) LoadNormalization(ctx context.Context, job j
 		var metadata []byte
 		if err = rows.Scan(&requirement.ExistingID, &requirement.Operator, &requirement.RequiredCount, &requirement.RequirementKind, &requirement.Evidence,
 			&option.ExistingID, &option.RawLabel, &option.Qualifier, &option.Evidence, &level, &option.CatalogCode, &option.AbilityName, &metadata,
-			&option.OriginalAbilityID, &option.OriginalResolution, &option.OriginalReviewRequestID); err != nil {
+			&option.OriginalAbilityID, &option.OriginalResolution, &option.NormalizationReason, &option.OriginalReviewRequestID); err != nil {
 			return catalog, result, err
 		}
 		if level.Valid {
@@ -229,12 +229,12 @@ func (r *JDNormalizationRepository) CompleteNormalization(ctx context.Context, j
 			}
 			changed, err = tx.ExecContext(ctx, `UPDATE job_description_ability_requirement_options SET
 				ability_id=(SELECT id FROM abilities WHERE code=NULLIF($2,'') AND is_active),
-				resolution_status=$3,candidate_metadata=$4,review_request_id=NULL
+				resolution_status=$3,candidate_metadata=$4,review_request_id=NULL,normalization_reason=$9
 				WHERE id=$1 AND requirement_id=$5
 				  AND ability_id IS NOT DISTINCT FROM NULLIF($6::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
 				  AND review_request_id IS NOT DISTINCT FROM NULLIF($7::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
 				  AND resolution_status=$8`, option.ExistingID, option.CatalogCode, resolution, metadata, requirement.ExistingID,
-				option.OriginalAbilityID, option.OriginalReviewRequestID, option.OriginalResolution)
+				option.OriginalAbilityID, option.OriginalReviewRequestID, option.OriginalResolution, option.NormalizationReason)
 			if err != nil {
 				return err
 			}
@@ -285,6 +285,11 @@ func (r *JDNormalizationRepository) CompleteNormalization(ctx context.Context, j
 	}
 	for _, item := range pending {
 		if err = enqueueAbilityReview(ctx, tx, job.UserID, item); err != nil {
+			return err
+		}
+	}
+	if status == "included" {
+		if err = enqueueJDResultAliases(ctx, tx, job.UserID, job.JobDescriptionID, result); err != nil {
 			return err
 		}
 	}

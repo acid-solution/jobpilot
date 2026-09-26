@@ -152,7 +152,10 @@ func (r *ProfileRepository) CompleteMaterialAnalysis(ctx context.Context, userID
 		return profile.Material{}, err
 	}
 	for _, draft := range drafts {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO user_profile_evidence(material_id,ability_id,level,evidence_quote,reason,confidence) VALUES($1,$2,$3,$4,$5,$6)`, id, draft.AbilityID, draft.Level, draft.Quote, draft.Reason, draft.Confidence); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO user_profile_evidence(material_id,ability_id,level,evidence_quote,reason,confidence,raw_label,normalization_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, draft.AbilityID, draft.Level, draft.Quote, draft.Reason, draft.Confidence, draft.RawLabel, draft.MappingReason); err != nil {
+			return profile.Material{}, err
+		}
+		if err = enqueueAliasReview(ctx, tx.Tx, userID, draft.AbilityID, aliasReviewSource{MaterialID: id, Label: draft.RawLabel, Evidence: draft.Quote, Reason: draft.MappingReason}); err != nil {
 			return profile.Material{}, err
 		}
 		affected = append(affected, draft.AbilityID)

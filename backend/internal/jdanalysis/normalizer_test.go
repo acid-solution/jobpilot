@@ -82,3 +82,20 @@ func TestVectorNormalizerDoesNotAutoAcceptNearestVector(t *testing.T) {
 		t.Fatal("expected one vector recall and one model judgment")
 	}
 }
+
+func TestVectorNormalizerKeepsAliasProposalsBeforeOptionDeduplication(t *testing.T) {
+	search := &candidateSearch{matches: []AbilityMatch{{Code: "go", Name: "Go"}}}
+	model := &normalizeModel{result: map[string]any{"decisions": []any{
+		map[string]any{"index": 0, "decision": "reuse_existing", "existing_ability_code": "go", "reason": "第一条关联理由"},
+		map[string]any{"index": 1, "decision": "reuse_existing", "existing_ability_code": "go", "reason": "第二条关联理由"},
+	}}}
+	n := &VectorNormalizer{Embedder: testEmbedder(t), Search: search, Model: model}
+	result := Result{AbilityRequirements: []AbilityRequirement{{Operator: RequirementAnyOf, RequiredCount: 1, Evidence: "Go语言或者Go并发编程", Options: []AbilityRequirementOption{{RawLabel: "Go语言", Evidence: "Go语言"}, {RawLabel: "Go并发编程", Evidence: "Go并发编程"}}}}}
+	got, err := n.Normalize(context.Background(), uuid.New(), "key", "model", Catalog{Abilities: []AbilityOption{{Code: "go", Name: "Go"}}}, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AbilityRequirements[0].Options) != 1 || len(got.AliasProposals) != 2 || got.AliasProposals[1].Reason != "第二条关联理由" {
+		t.Fatalf("alias evidence was lost during business deduplication: %+v", got)
+	}
+}

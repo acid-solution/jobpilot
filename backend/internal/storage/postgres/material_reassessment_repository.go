@@ -115,8 +115,11 @@ func (r *MaterialReassessmentRepository) CompleteReassessment(ctx context.Contex
 		return err
 	}
 	for _, draft := range drafts {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO user_profile_evidence(material_id,ability_id,level,evidence_quote,reason,confidence)
-			VALUES($1,$2,$3,$4,$5,$6)`, job.MaterialID, draft.AbilityID, draft.Level, draft.Quote, draft.Reason, draft.Confidence); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO user_profile_evidence(material_id,ability_id,level,evidence_quote,reason,confidence,raw_label,normalization_reason)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, job.MaterialID, draft.AbilityID, draft.Level, draft.Quote, draft.Reason, draft.Confidence, draft.RawLabel, draft.MappingReason); err != nil {
+			return err
+		}
+		if err = enqueueAliasReview(ctx, tx, job.UserID, draft.AbilityID, aliasReviewSource{MaterialID: job.MaterialID, Label: draft.RawLabel, Evidence: draft.Quote, Reason: draft.MappingReason}); err != nil {
 			return err
 		}
 		affected = append(affected, draft.AbilityID)

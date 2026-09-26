@@ -95,8 +95,12 @@ func (r *AgentRepository) Get(ctx context.Context, user uuid.UUID, scope string,
 		return v, err
 	}
 	var action agent.Action
-	err = r.db.QueryRowContext(ctx, `SELECT id,kind,arguments,summary,status,interrupt_id,expected_hash FROM agent_actions WHERE conversation_id=$1 AND status='pending'`, id).Scan(&action.ID, &action.Kind, &action.Arguments, &action.Summary, &action.Status, &action.InterruptID, &action.ExpectedHash)
+	var versions []byte
+	err = r.db.QueryRowContext(ctx, `SELECT id,kind,arguments,summary,status,interrupt_id,expected_hash,expected_versions FROM agent_actions WHERE conversation_id=$1 AND status='pending'`, id).Scan(&action.ID, &action.Kind, &action.Arguments, &action.Summary, &action.Status, &action.InterruptID, &action.ExpectedHash, &versions)
 	if err == nil {
+		if err := json.Unmarshal(versions, &action.ExpectedVersions); err != nil {
+			return v, err
+		}
 		v.PendingAction = &action
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return v, err
@@ -194,10 +198,47 @@ func (r *AgentRepository) AddMessage(ctx context.Context, conversation uuid.UUID
 	}
 	return m, err
 }
-func (r *AgentRepository) CreateAction(ctx context.Context, conversation, user uuid.UUID, scope, kind string, args json.RawMessage, summary, hash string) (agent.Action, error) {
+func (r *AgentRepository) ReadResourceVersions(ctx context.Context, user uuid.UUID, keys []string) (map[string]int64, error) {
+	versions := make(map[string]int64, len(keys))
+	for _, key := range keys {
+		versions[key] = 0
+	}
+	if len(keys) == 0 {
+		return versions, nil
+	}
+	encoded, err := json.Marshal(keys)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT resource_key,version FROM resource_versions
+		WHERE user_id=$1 AND resource_key IN (SELECT jsonb_array_elements_text($2::jsonb))`, user, encoded)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var version int64
+		if err := rows.Scan(&key, &version); err != nil {
+			return nil, err
+		}
+		versions[key] = version
+	}
+	return versions, rows.Err()
+}
+
+func (r *AgentRepository) CreateAction(ctx context.Context, conversation, user uuid.UUID, scope, kind string, args json.RawMessage, summary string, snapshot agent.Snapshot) (agent.Action, error) {
 	var a agent.Action
-	err := r.db.QueryRowContext(ctx, `INSERT INTO agent_actions(conversation_id,user_id,goal_signature,kind,arguments,summary,expected_hash)
-		VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,kind,arguments,summary,status`, conversation, user, scope, kind, args, summary, hash).Scan(&a.ID, &a.Kind, &a.Arguments, &a.Summary, &a.Status)
+	if len(snapshot.Versions) == 0 || snapshot.Hash == "" {
+		return a, agent.ErrStale
+	}
+	versions, err := json.Marshal(snapshot.Versions)
+	if err != nil {
+		return a, err
+	}
+	err = r.db.QueryRowContext(ctx, `INSERT INTO agent_actions(conversation_id,user_id,goal_signature,kind,arguments,summary,expected_hash,expected_versions)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,kind,arguments,summary,status`, conversation, user, scope, kind, args, summary, snapshot.Hash, versions).Scan(&a.ID, &a.Kind, &a.Arguments, &a.Summary, &a.Status)
+	a.ExpectedHash, a.ExpectedVersions = snapshot.Hash, snapshot.Versions
 	return a, err
 }
 func (r *AgentRepository) SetInterrupt(ctx context.Context, conversation, action uuid.UUID, interrupt string) error {
@@ -216,9 +257,13 @@ func (r *AgentRepository) SetInterrupt(ctx context.Context, conversation, action
 }
 func (r *AgentRepository) GetAction(ctx context.Context, user uuid.UUID, scope string, id uuid.UUID) (agent.Action, error) {
 	var a agent.Action
-	err := r.db.QueryRowContext(ctx, `SELECT id,kind,arguments,summary,status,interrupt_id,expected_hash FROM agent_actions WHERE id=$1 AND user_id=$2 AND goal_signature=$3`, id, user, scope).Scan(&a.ID, &a.Kind, &a.Arguments, &a.Summary, &a.Status, &a.InterruptID, &a.ExpectedHash)
+	var versions []byte
+	err := r.db.QueryRowContext(ctx, `SELECT id,kind,arguments,summary,status,interrupt_id,expected_hash,expected_versions FROM agent_actions WHERE id=$1 AND user_id=$2 AND goal_signature=$3`, id, user, scope).Scan(&a.ID, &a.Kind, &a.Arguments, &a.Summary, &a.Status, &a.InterruptID, &a.ExpectedHash, &versions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, agent.ErrNotFound
+	}
+	if err == nil {
+		err = json.Unmarshal(versions, &a.ExpectedVersions)
 	}
 	return a, err
 }

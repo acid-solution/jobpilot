@@ -218,7 +218,7 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 	if err := validateReviewResult(result, input.Catalog); err != nil {
 		return r.Fail(ctx, input, usageID, "model_invalid_response", input.Attempts < input.MaxAttempts)
 	}
-	tx, err := r.database.BeginTx(ctx, nil)
+	tx, affectedJDs, err := r.beginReviewMutation(ctx, input.ID)
 	if err != nil {
 		return err
 	}
@@ -276,7 +276,7 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 	case "reject":
 		_, err = tx.ExecContext(ctx, `DELETE FROM job_description_ability_requirement_options WHERE review_request_id=$1 AND ability_id IS NULL`, input.ID)
 		if err == nil {
-			err = cleanupRequirementGroups(ctx, tx)
+			err = cleanupRequirementGroups(ctx, tx, affectedJDs...)
 		}
 	}
 	if err != nil {
@@ -317,6 +317,11 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 }
 
 func (r *AbilityReviewRepository) Fail(ctx context.Context, input abilityreview.Input, usageID uuid.UUID, code string, retryable bool) error {
+	tx, _, err := r.beginReviewMutation(ctx, input.ID)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	final := !retryable || input.Attempts >= input.MaxAttempts
 	status := "failed"
 	next := time.Now().Add(time.Duration(10*(1<<max(input.Attempts-1, 0))) * time.Second)
@@ -324,7 +329,7 @@ func (r *AbilityReviewRepository) Fail(ctx context.Context, input abilityreview.
 	if final {
 		attempts = input.MaxAttempts
 	}
-	result, err := r.database.ExecContext(ctx, `UPDATE ability_review_requests SET status=$3,attempts=$6,next_attempt_at=$4,last_error=$5,
+	result, err := tx.ExecContext(ctx, `UPDATE ability_review_requests SET status=$3,attempts=$6,next_attempt_at=$4,last_error=$5,
 		lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,updated_at=NOW() WHERE id=$1 AND status='running' AND lease_token=$2`, input.ID, input.LeaseToken, status, next, code, attempts)
 	if err != nil {
 		return err
@@ -333,12 +338,16 @@ func (r *AbilityReviewRepository) Fail(ctx context.Context, input abilityreview.
 		return err
 	}
 	if final {
-		_, _ = r.database.ExecContext(ctx, `UPDATE job_description_ability_requirement_options SET resolution_status='review_failed' WHERE review_request_id=$1`, input.ID)
+		if _, err = tx.ExecContext(ctx, `UPDATE job_description_ability_requirement_options SET resolution_status='review_failed' WHERE review_request_id=$1`, input.ID); err != nil {
+			return err
+		}
 	}
 	if usageID != uuid.Nil {
-		_, _ = r.database.ExecContext(ctx, `UPDATE platform_model_usage SET status='failed',error_code=$2,updated_at=NOW() WHERE id=$1`, usageID, code)
+		if _, err = tx.ExecContext(ctx, `UPDATE platform_model_usage SET status='failed',error_code=$2,updated_at=NOW() WHERE id=$1`, usageID, code); err != nil {
+			return err
+		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 type queryer interface {
@@ -425,16 +434,23 @@ func enqueueAbilityGradingForReview(ctx context.Context, tx *sql.Tx, requestID u
 	return err
 }
 
-func cleanupRequirementGroups(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, `DELETE FROM job_description_ability_requirements requirement WHERE NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)`)
+func cleanupRequirementGroups(ctx context.Context, tx *sql.Tx, jdIDs ...uuid.UUID) error {
+	if len(jdIDs) == 0 {
+		return nil
+	}
+	ids, err := json.Marshal(jdIDs)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE job_description_ability_requirements requirement SET operator='single',required_count=1 WHERE operator='any_of' AND (SELECT COUNT(*) FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)=1`)
+	_, err = tx.ExecContext(ctx, `DELETE FROM job_description_ability_requirements requirement WHERE job_description_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value) AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)`, ids)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM job_description_ability_requirements requirement WHERE operator='at_least_n' AND (SELECT COUNT(*) FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)<required_count`)
+	_, err = tx.ExecContext(ctx, `UPDATE job_description_ability_requirements requirement SET operator='single',required_count=1 WHERE job_description_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value) AND operator='any_of' AND (SELECT COUNT(*) FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)=1`, ids)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM job_description_ability_requirements requirement WHERE job_description_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value) AND operator='at_least_n' AND (SELECT COUNT(*) FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)<required_count`, ids)
 	return err
 }
 func rebuildResolvedMentions(ctx context.Context, tx *sql.Tx, requestID uuid.UUID) error {

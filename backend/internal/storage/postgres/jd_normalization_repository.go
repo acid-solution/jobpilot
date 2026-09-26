@@ -288,7 +288,7 @@ func (r *JDNormalizationRepository) CompleteNormalization(ctx context.Context, j
 			return err
 		}
 	}
-	if err = cleanupRequirementGroups(ctx, tx); err != nil {
+	if err = cleanupRequirementGroups(ctx, tx, job.JobDescriptionID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM job_description_abilities WHERE job_description_id=$1`, job.JobDescriptionID); err != nil {

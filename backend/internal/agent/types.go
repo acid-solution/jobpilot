@@ -30,13 +30,21 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 type Action struct {
-	ID           uuid.UUID       `json:"id"`
-	Kind         string          `json:"kind"`
-	Arguments    json.RawMessage `json:"arguments"`
-	Summary      string          `json:"summary"`
-	Status       string          `json:"status"`
-	InterruptID  string          `json:"-"`
-	ExpectedHash string          `json:"-"`
+	ID               uuid.UUID        `json:"id"`
+	Kind             string           `json:"kind"`
+	Arguments        json.RawMessage  `json:"arguments"`
+	Summary          string           `json:"summary"`
+	Status           string           `json:"status"`
+	InterruptID      string           `json:"-"`
+	ExpectedHash     string           `json:"-"`
+	ExpectedVersions map[string]int64 `json:"-"`
+}
+
+// Snapshot keeps content checks independent of monotonic resource revisions.
+// A revision still changes when a resource is edited back to its old contents.
+type Snapshot struct {
+	Hash     string
+	Versions map[string]int64
 }
 type Event struct {
 	Type     string  `json:"type"`
@@ -54,10 +62,11 @@ type Repository interface {
 	Delete(context.Context, uuid.UUID, string, uuid.UUID) error
 	BeginRun(context.Context, uuid.UUID, string, uuid.UUID) (uuid.UUID, error)
 	BeginResume(context.Context, uuid.UUID, string, uuid.UUID) (uuid.UUID, error)
-	HeartbeatRun(context.Context,uuid.UUID,uuid.UUID)error
+	HeartbeatRun(context.Context, uuid.UUID, uuid.UUID) error
 	EndRun(context.Context, uuid.UUID, uuid.UUID, bool) error
 	AddMessage(context.Context, uuid.UUID, string, string) (Message, error)
-	CreateAction(context.Context, uuid.UUID, uuid.UUID, string, string, json.RawMessage, string, string) (Action, error)
+	ReadResourceVersions(context.Context, uuid.UUID, []string) (map[string]int64, error)
+	CreateAction(context.Context, uuid.UUID, uuid.UUID, string, string, json.RawMessage, string, Snapshot) (Action, error)
 	SetInterrupt(context.Context, uuid.UUID, uuid.UUID, string) error
 	GetAction(context.Context, uuid.UUID, string, uuid.UUID) (Action, error)
 	ClaimAction(context.Context, uuid.UUID, uuid.UUID) (bool, error)

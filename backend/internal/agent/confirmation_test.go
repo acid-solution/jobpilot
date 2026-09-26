@@ -27,6 +27,7 @@ func TestWriteToolExecutesOnlyAfterEinoResume(t *testing.T) {
 		name              string
 		approve           bool
 		stale             bool
+		versionStale      bool
 		missingCheckpoint bool
 		claimLost         bool
 		businessErr       error
@@ -39,6 +40,7 @@ func TestWriteToolExecutesOnlyAfterEinoResume(t *testing.T) {
 		{name: "approve", approve: true, status: "succeeded", writes: 1, toolReply: "操作成功"},
 		{name: "cancel", status: "cancelled", toolReply: "用户取消"},
 		{name: "stale", approve: true, stale: true, status: "stale", wantError: ErrStale.Error(), errorCode: "action_stale"},
+		{name: "edited back to same contents", approve: true, versionStale: true, status: "stale", wantError: ErrStale.Error(), errorCode: "action_stale"},
 		{name: "business failure", approve: true, businessErr: errors.New("business rejected"), status: "failed", writes: 1, toolReply: "状态：failed", errorCode: "business_operation_failed"},
 		{name: "checkpoint missing", approve: true, missingCheckpoint: true, status: "pending", wantError: "checkpoint"},
 		{name: "claim lost", approve: true, claimLost: true, status: "pending", wantError: ErrActionClosed.Error()},
@@ -104,6 +106,9 @@ func TestWriteToolExecutesOnlyAfterEinoResume(t *testing.T) {
 			if tc.stale {
 				// Same goal scope, but the snapshot shown on the card is now outdated.
 				targets.value.Title = "资料已修改"
+			}
+			if tc.versionStale {
+				repo.version += 2
 			}
 			if tc.missingCheckpoint {
 				if err := checkpoints.Delete(ctx, "agent-"+conversation.String()); err != nil {
@@ -205,6 +210,7 @@ type confirmationRepository struct {
 	conversation Conversation
 	action       Action
 	claimLost    bool
+	version      int64
 }
 
 func (r *confirmationRepository) Get(_ context.Context, user uuid.UUID, scope string, id uuid.UUID) (Conversation, error) {
@@ -246,8 +252,16 @@ func (r *confirmationRepository) AddMessage(_ context.Context, _ uuid.UUID, role
 	return Message{Role: role, Content: content}, nil
 }
 
-func (r *confirmationRepository) CreateAction(_ context.Context, _, _ uuid.UUID, scope, kind string, arguments json.RawMessage, summary, expected string) (Action, error) {
-	r.action = Action{ID: uuid.New(), Kind: kind, Arguments: arguments, Summary: summary, ExpectedHash: expected, Status: "pending"}
+func (r *confirmationRepository) ReadResourceVersions(_ context.Context, _ uuid.UUID, keys []string) (map[string]int64, error) {
+	values := make(map[string]int64, len(keys))
+	for _, key := range keys {
+		values[key] = r.version + 1
+	}
+	return values, nil
+}
+
+func (r *confirmationRepository) CreateAction(_ context.Context, _, _ uuid.UUID, scope, kind string, arguments json.RawMessage, summary string, expected Snapshot) (Action, error) {
+	r.action = Action{ID: uuid.New(), Kind: kind, Arguments: arguments, Summary: summary, ExpectedHash: expected.Hash, ExpectedVersions: expected.Versions, Status: "pending"}
 	return r.action, nil
 }
 

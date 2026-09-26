@@ -156,7 +156,7 @@ func TestAgentAndVectorMigrationIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := json.RawMessage(`{"raw_text":"JD 原文"}`)
-	action, err := repo.CreateAction(ctx, conv.ID, user, "goal-a", "jd_add", args, "添加 JD", "hash")
+	action, err := repo.CreateAction(ctx, conv.ID, user, "goal-a", "jd_add", args, "添加 JD", agent.Snapshot{Hash: "hash", Versions: map[string]int64{"target_selection": 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestAgentAndVectorMigrationIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orphanAction, err := repo.CreateAction(ctx, orphan.ID, user, "goal-a", "jd_add", args, "添加 JD", "hash")
+	orphanAction, err := repo.CreateAction(ctx, orphan.ID, user, "goal-a", "jd_add", args, "添加 JD", agent.Snapshot{Hash: "hash", Versions: map[string]int64{"target_selection": 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestAgentAndVectorMigrationIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	interruptedAction, err := repo.CreateAction(ctx, interrupted.ID, user, "goal-a", "jd_add", args, "添加 JD", "hash")
+	interruptedAction, err := repo.CreateAction(ctx, interrupted.ID, user, "goal-a", "jd_add", args, "添加 JD", agent.Snapshot{Hash: "hash", Versions: map[string]int64{"target_selection": 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -314,7 +314,7 @@ func enqueuePendingAbilityReviewsForJD(ctx context.Context, transaction *sql.Tx,
 		}
 	}
 	if len(pending) > 0 {
-		if err := cleanupRequirementGroups(ctx, transaction); err != nil {
+		if err := cleanupRequirementGroups(ctx, transaction, jdID); err != nil {
 			return err
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
@@ -114,6 +115,15 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 		if err != nil {
 			return "", err
 		}
+		// Serialize the short snapshot/persistence step with page and background
+		// writes. Never hold the lock while waiting for a model or the user.
+		if s.MutationLocker != nil {
+			release, err := s.MutationLocker.Lock(runCtx, user)
+			if err != nil {
+				return "", err
+			}
+			defer release()
+		}
 		expected, err := s.snapshot(runCtx, user, input.Kind, arguments)
 		if err != nil {
 			return "", err
@@ -155,14 +165,25 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 		}
 		defer release()
 	}
+	keys := make([]string, 0, len(a.ExpectedVersions))
+	for key := range a.ExpectedVersions {
+		keys = append(keys, key)
+	}
+	versions, err := s.Repo.ReadResourceVersions(ctx, user, keys)
+	if err != nil {
+		return err
+	}
+	// Check revisions before reading the object: a deleted resource is stale,
+	// rather than a missing-object error leaving the action permanently pending.
+	if len(a.ExpectedVersions) == 0 || !maps.Equal(versions, a.ExpectedVersions) {
+		return s.rejectStaleAction(ctx, a.ID, emit)
+	}
 	current, err := s.snapshot(ctx, user, a.Kind, a.Arguments)
 	if err != nil {
 		return err
 	}
-	if current != a.ExpectedHash {
-		_ = s.Repo.StaleAction(ctx, a.ID)
-		emit(Event{Type: "error", Code: "action_stale", Text: "相关资料已变化，请重新提出操作。"})
-		return ErrStale
+	if len(a.ExpectedVersions) == 0 || current.Hash != a.ExpectedHash || !maps.Equal(current.Versions, a.ExpectedVersions) {
+		return s.rejectStaleAction(ctx, a.ID, emit)
 	}
 	claimed, err := s.Repo.ClaimAction(ctx, a.ID, conversationID)
 	if err != nil {
@@ -184,6 +205,14 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 	}
 	emit(Event{Type: "tool", Tool: a.Kind, Text: "已执行"})
 	return nil
+}
+
+func (s *Service) rejectStaleAction(ctx context.Context, id uuid.UUID, emit func(Event)) error {
+	if err := s.Repo.StaleAction(ctx, id); err != nil {
+		return err
+	}
+	emit(Event{Type: "error", Code: "action_stale", Text: "相关资料已变化，请重新提出操作。"})
+	return ErrStale
 }
 
 func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in readArgs, emit func(Event)) (string, error) {
@@ -396,7 +425,56 @@ func parseID(raw json.RawMessage, key string) (uuid.UUID, error) {
 	}
 	return uuid.Parse(value)
 }
-func (s *Service) snapshot(ctx context.Context, user uuid.UUID, kind string, args json.RawMessage) (string, error) {
+func (s *Service) snapshot(ctx context.Context, user uuid.UUID, kind string, args json.RawMessage) (Snapshot, error) {
+	_, t, err := s.scope(ctx, user)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	keys := []string{"target_selection"}
+	if t != nil {
+		keys = append(keys, "target:"+t.ID.String())
+	}
+	switch kind {
+	case "jd_edit", "jd_delete", "jd_retry", "jd_review_retry", "jd_grading_retry", "material_edit", "material_delete", "material_confirm", "capability_level":
+		id, err := parseID(args, "id")
+		if err != nil {
+			return Snapshot{}, err
+		}
+		prefix := "jd:"
+		if strings.HasPrefix(kind, "material_") {
+			prefix = "material:"
+		}
+		if kind == "capability_level" {
+			prefix = "capability:"
+			keys = append(keys, "market", "profile")
+		}
+		keys = append(keys, prefix+id.String())
+	case "profile_settings":
+		keys = append(keys, "profile_settings")
+	case "gaps_analyze":
+		keys = append(keys, "market", "profile", "knowledge_gaps")
+	case "recommendations_generate", "project_select":
+		keys = append(keys, "market", "profile", "recommendations")
+	}
+	before, err := s.Repo.ReadResourceVersions(ctx, user, keys)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	contentHash, err := s.snapshotHash(ctx, user, kind, args)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	after, err := s.Repo.ReadResourceVersions(ctx, user, keys)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !maps.Equal(before, after) {
+		return Snapshot{}, ErrStale
+	}
+	return Snapshot{Hash: contentHash, Versions: after}, nil
+}
+
+func (s *Service) snapshotHash(ctx context.Context, user uuid.UUID, kind string, args json.RawMessage) (string, error) {
 	scope, t, err := s.scope(ctx, user)
 	if err != nil {
 		return "", err

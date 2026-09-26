@@ -107,8 +107,44 @@ func (r *AnalysisRepository) Catalog(ctx context.Context) (jdanalysis.Catalog, e
 }
 
 func (r *AnalysisRepository) RecoverExpired(ctx context.Context) (int64, error) {
+	tx, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT user_id FROM analysis_jobs
+		WHERE job_type='jd_analysis' AND status='running' AND lease_expires_at<NOW() ORDER BY user_id`)
+	if err != nil {
+		return 0, err
+	}
+	var owners []uuid.UUID
+	for rows.Next() {
+		var owner uuid.UUID
+		if err := rows.Scan(&owner); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		owners = append(owners, owner)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	if len(owners) == 0 {
+		return 0, nil
+	}
+	for _, owner := range owners {
+		if err := lockUserMutationTx(ctx, tx, owner); err != nil {
+			return 0, err
+		}
+	}
+	ownerJSON, err := json.Marshal(owners)
+	if err != nil {
+		return 0, err
+	}
 	var recovered int64
-	err := r.database.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		WITH recovered AS (
 			UPDATE analysis_jobs
 			SET status = 'failed', next_attempt_at = NOW(), locked_at = NULL,
@@ -116,6 +152,7 @@ func (r *AnalysisRepository) RecoverExpired(ctx context.Context) (int64, error) 
 			    last_error = 'worker_interrupted', updated_at = NOW()
 			WHERE job_type = 'jd_analysis' AND status = 'running'
 			  AND lease_expires_at < NOW()
+			  AND user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value)
 			RETURNING job_description_id, user_id, attempts >= max_attempts AS exhausted,
 			          preserve_previous_result
 		), marked AS (
@@ -130,11 +167,11 @@ func (r *AnalysisRepository) RecoverExpired(ctx context.Context) (int64, error) 
 			  AND jd.user_id = recovered.user_id
 			RETURNING jd.id
 		)
-		SELECT COUNT(*) FROM recovered`).Scan(&recovered)
+		SELECT COUNT(*) FROM recovered`, ownerJSON).Scan(&recovered)
 	if err != nil {
 		return 0, fmt.Errorf("recover expired analysis jobs: %w", err)
 	}
-	return recovered, nil
+	return recovered, tx.Commit()
 }
 
 func (r *AnalysisRepository) Claim(ctx context.Context, leaseDuration time.Duration) (jdanalysis.Job, error) {
@@ -265,7 +302,7 @@ func (r *AnalysisRepository) Complete(ctx context.Context, job jdanalysis.Job, r
 		    responsibilities = $5, ability_mentions = $6, conditions = $7,
 		    document_type = $8, validation_status = $9, validation_reason = $10,
 		    analysis_provider = $11, analysis_model = $12, analysis_prompt_version = $13,
-		    normalization_prompt_version = CASE WHEN $27 THEN $13 ELSE '' END,
+		    normalization_prompt_version = CASE WHEN $27 THEN $13::varchar ELSE '' END,
 		    analysis_completed_at = NOW(), status = $14, relevance_reason = $15,
 		    primary_category = $16, secondary_category = $17,
 		    classification_review_decision = $18, classification_review_reason = $19,
@@ -539,7 +576,7 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 				return classificationOutcome{}, err
 			}
 		}
-		if err := cleanupRequirementGroups(ctx, transaction); err != nil {
+		if err := cleanupRequirementGroups(ctx, transaction, job.JobDescriptionID); err != nil {
 			return classificationOutcome{}, err
 		}
 	}
@@ -686,6 +723,9 @@ func (r *AnalysisRepository) Fail(ctx context.Context, job jdanalysis.Job, code 
 		return fmt.Errorf("begin failure transaction: %w", err)
 	}
 	defer transaction.Rollback()
+	if err := lockUserMutationTx(ctx, transaction, job.UserID); err != nil {
+		return err
+	}
 
 	attempts := job.Attempts
 	if finalFailure {

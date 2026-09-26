@@ -241,22 +241,20 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 		if _, lockErr := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(741904)`); lockErr != nil {
 			return lockErr
 		}
-		matchValues := append([]string{result.NewAbility.Name}, result.NewAbility.Aliases...)
-		for _, value := range matchValues {
-			found, ok, findErr := findMatchingAbility(ctx, tx, NormalizeAbilityName(value))
-			if findErr != nil {
-				return findErr
-			}
-			if ok {
-				abilityID = found
-				result.Decision = "reuse_existing"
-				break
-			}
+		// Only the approved canonical name identifies the ability. A proposed
+		// alias belonging to another ability must not merge these two abilities.
+		found, ok, findErr := findMatchingAbility(ctx, tx, NormalizeAbilityName(result.NewAbility.Name))
+		if findErr != nil {
+			return findErr
+		}
+		if ok {
+			abilityID = found
+			result.Decision = "reuse_existing"
 		}
 		if abilityID == uuid.Nil {
-			aliasesValue := result.NewAbility.Aliases
-			if aliasesValue == nil {
-				aliasesValue = []string{}
+			aliasesValue, aliasErr := nonConflictingAbilityAliases(ctx, tx, result.NewAbility.Name, result.NewAbility.Aliases)
+			if aliasErr != nil {
+				return aliasErr
 			}
 			aliases, _ := json.Marshal(aliasesValue)
 			code := "ability-dyn-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
@@ -352,6 +350,29 @@ func (r *AbilityReviewRepository) Fail(ctx context.Context, input abilityreview.
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// Called under the catalog transaction lock, so another review cannot claim
+// an alias between this check and the new ability's insertion.
+func nonConflictingAbilityAliases(ctx context.Context, q queryer, name string, aliases []string) ([]string, error) {
+	kept := make([]string, 0, len(aliases))
+	seen := map[string]bool{NormalizeAbilityName(name): true}
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		normalized := NormalizeAbilityName(alias)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		_, conflict, err := findMatchingAbility(ctx, q, normalized)
+		if err != nil {
+			return nil, err
+		}
+		if !conflict {
+			kept = append(kept, alias)
+		}
+	}
+	return kept, nil
 }
 
 func findMatchingAbility(ctx context.Context, q queryer, normalized string) (uuid.UUID, bool, error) {

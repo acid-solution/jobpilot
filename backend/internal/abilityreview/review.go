@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "ability-review-v1"
+const PromptVersion = "ability-review-v2"
 
 var (
 	ErrNoRequest = errors.New("no claimable ability review")

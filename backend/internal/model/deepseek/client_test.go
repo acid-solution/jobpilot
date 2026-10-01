@@ -14,6 +14,8 @@ import (
 )
 
 func TestAnalyzeJDUsesJSONModeAndKeepsOnlyQuotedEvidence(t *testing.T) {
+	catalog := testCatalog()
+	catalog.Abilities = append(catalog.Abilities, jdanalysis.AbilityOption{Code: "sentinel-ability", Name: "DO_NOT_SEND_ABILITY_MARKER"})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/chat/completions" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
@@ -29,19 +31,22 @@ func TestAnalyzeJDUsesJSONModeAndKeepsOnlyQuotedEvidence(t *testing.T) {
 			t.Fatalf("unexpected request: %#v", body)
 		}
 		prompt := body.Messages[0].Content
+		if strings.Contains(prompt, "能力目录：") || strings.Contains(prompt, "DO_NOT_SEND_ABILITY_MARKER") {
+			t.Fatal("initial JD extraction must not include the full ability catalog")
+		}
 		for _, required := range []string{"definition", "include_signals", "exclude_signals", "confused_with", "岗位标题只能辅助理解", "单个关键词", "恰好一个主导小类", "ability_requirements", "any_of", "at_least_n", "qualifier", "同一段要求原文只能生成一个要求组"} {
 			if !strings.Contains(prompt, required) {
 				t.Fatalf("system prompt is missing %q: %s", required, prompt)
 			}
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"document_type\":\"job_description\",\"validation_status\":\"valid\",\"validation_reason\":\"\",\"title\":\"Go 后端实习生\",\"company\":\"示例公司\",\"employment_type\":\"internship\",\"responsibilities\":[\"开发后端服务\"],\"classifications\":[{\"category_code\":\"backend\",\"specialty_code\":\"backend-business\",\"relation\":\"primary\",\"evidence\":\"开发后端服务\",\"reason\":\"职责直接面向业务服务实现，而非通用中间件。\"}],\"ability_requirements\":[{\"operator\":\"single\",\"required_count\":1,\"evidence\":\"熟悉 Go 和 PostgreSQL\",\"options\":[{\"name\":\"Golang\",\"catalog_code\":\"ability-go\",\"qualifier\":\"\",\"evidence\":\"Go\",\"required_level\":3}]}],\"conditions\":[\"本科及以上\"]}"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"document_type\":\"job_description\",\"validation_status\":\"valid\",\"validation_reason\":\"\",\"title\":\"Go 后端实习生\",\"company\":\"示例公司\",\"employment_type\":\"internship\",\"responsibilities\":[\"开发后端服务\"],\"classifications\":[{\"category_code\":\"backend\",\"specialty_code\":\"backend-business\",\"relation\":\"primary\",\"evidence\":\"开发后端服务\",\"reason\":\"职责直接面向业务服务实现，而非通用中间件。\"}],\"ability_requirements\":[{\"operator\":\"single\",\"required_count\":1,\"evidence\":\"熟悉 Go 和 PostgreSQL\",\"options\":[{\"name\":\"Golang\",\"catalog_code\":\"sentinel-ability\",\"qualifier\":\"\",\"evidence\":\"Go\",\"required_level\":3}]}],\"conditions\":[\"本科及以上\"]}"}}]}`))
 	}))
 	defer server.Close()
 
 	rawJD := "Go 后端实习生，负责开发后端服务，熟悉 Go 和 PostgreSQL，本科及以上。"
 	result, err := NewClient(server.URL, server.Client()).AnalyzeJD(
-		context.Background(), "sk-test-key", "deepseek-flash", rawJD, testCatalog(),
+		context.Background(), "sk-test-key", "deepseek-flash", rawJD, catalog,
 	)
 	if err != nil {
 		t.Fatalf("AnalyzeJD: %v", err)
@@ -51,6 +56,9 @@ func TestAnalyzeJDUsesJSONModeAndKeepsOnlyQuotedEvidence(t *testing.T) {
 	}
 	if result.AbilityMentions[0].Name != "Go" {
 		t.Fatalf("unexpected ability: %#v", result.AbilityMentions[0])
+	}
+	if result.AbilityMentions[0].CatalogCode != "ability-go" || result.AbilityMentions[0].RequiredLevel != nil {
+		t.Fatalf("model-supplied catalog code and level must be ignored: %#v", result.AbilityMentions[0])
 	}
 	if len(result.Classifications) != 1 || result.Classifications[0].CategoryCode != "backend" {
 		t.Fatalf("unexpected classifications: %#v", result.Classifications)

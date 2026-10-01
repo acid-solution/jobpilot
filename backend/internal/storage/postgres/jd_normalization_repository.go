@@ -318,7 +318,7 @@ func (r *JDNormalizationRepository) CompleteNormalization(ctx context.Context, j
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE job_descriptions SET ability_mentions=$2,normalization_prompt_version=$3,updated_at=NOW() WHERE id=$1`,
-		job.JobDescriptionID, mentions, jdanalysis.PromptVersion); err != nil {
+		job.JobDescriptionID, mentions, jdanalysis.NormalizationPromptVersion); err != nil {
 		return err
 	}
 	if status == "included" {

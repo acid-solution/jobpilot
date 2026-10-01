@@ -434,7 +434,7 @@ func TestAgentAndVectorMigrationIsolated(t *testing.T) {
 		Scan(&abilityCode, &jdStatus, &normalizationVersion); err != nil {
 		t.Fatal(err)
 	}
-	if abilityCode != catalog.Abilities[0].Code || jdStatus != "included" || normalizationVersion != jdanalysis.PromptVersion {
+	if abilityCode != catalog.Abilities[0].Code || jdStatus != "included" || normalizationVersion != jdanalysis.NormalizationPromptVersion {
 		t.Fatalf("atomic JD normalization incomplete: %s %s %s", abilityCode, jdStatus, normalizationVersion)
 	}
 	if err = normalizeRepo.CompleteNormalization(ctx, normalizationJob, current); !errors.Is(err, jdanalysis.ErrNormalizationLeaseLost) {

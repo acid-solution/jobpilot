@@ -11,7 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "jd-vector-candidates-v12"
+const PromptVersion = "jd-raw-abilities-v13"
+const NormalizationPromptVersion = "jd-vector-candidates-v12"
 const ClassificationReviewPromptVersion = "job-classification-review-v1"
 
 var (
@@ -374,8 +375,12 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	}
 
 	result, err := w.analyzer.AnalyzeJD(taskCtx, credentials.APIKey, credentials.Model, job.RawText, catalog)
-	if err == nil && result.ValidationStatus == ValidationValid && w.normalizer != nil {
-		result, err = w.normalizer.Normalize(taskCtx, job.UserID, credentials.APIKey, credentials.Model, catalog, result)
+	if err == nil && result.ValidationStatus == ValidationValid && len(result.AbilityRequirements) > 0 {
+		if w.normalizer == nil {
+			err = NewError("ability_normalization_unavailable", true, errors.New("JD ability normalization requires configured embeddings"))
+		} else {
+			result, err = w.normalizer.Normalize(taskCtx, job.UserID, credentials.APIKey, credentials.Model, catalog, result)
+		}
 	}
 	if err == nil && result.ValidationStatus == ValidationValid && w.classificationReview.Enabled {
 		if w.classificationReview.Reviewer == nil || strings.TrimSpace(w.classificationReview.APIKey) == "" {

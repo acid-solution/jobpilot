@@ -90,6 +90,20 @@ func TestWorkerCompletesClaimedJob(t *testing.T) {
 	}
 }
 
+func TestWorkerDoesNotPersistUnnormalizedJDAbilities(t *testing.T) {
+	repository := &repositoryStub{job: Job{ID: uuid.New(), UserID: uuid.New(), Attempts: 1, MaxAttempts: 3}}
+	worker := NewWorker(repository, credentialStub{credentials: modelconfig.Credentials{
+		Provider: "deepseek", Model: "deepseek-flash", APIKey: "secret",
+	}}, analyzerStub{result: Result{ValidationStatus: ValidationValid, AbilityRequirements: []AbilityRequirement{{
+		Operator: RequirementSingle, RequiredCount: 1, Evidence: "熟悉 Go",
+		Options: []AbilityRequirementOption{{RawLabel: "Go", Evidence: "Go"}},
+	}}}}, time.Second)
+	worked, err := worker.ProcessOnce(context.Background())
+	if err != nil || !worked || repository.failedCode != "ability_normalization_unavailable" || !repository.failedRetry || repository.completed != nil {
+		t.Fatalf("unnormalized JD must fail visibly: worked=%v err=%v code=%s completed=%v", worked, err, repository.failedCode, repository.completed)
+	}
+}
+
 func TestWorkerUsesIndependentClassificationReviewForValidJD(t *testing.T) {
 	repository := &repositoryStub{job: Job{ID: uuid.New(), UserID: uuid.New(), Attempts: 1, MaxAttempts: 3}}
 	reviewer := &classificationReviewerStub{result: ClassificationReviewResult{

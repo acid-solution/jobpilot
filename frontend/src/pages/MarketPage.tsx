@@ -285,6 +285,16 @@ function analysisFailureCopy(code?: string) {
 				label: '目录暂时不可用',
 				reason: '岗位或能力目录暂时不可用，JD 原文已保存，可稍后重新分析。',
 			}
+		case 'ability_normalization_unavailable':
+			return {
+				label: '能力归一化未配置',
+				reason: 'JD 原文已保存，请启用向量服务后重新分析。',
+			}
+		case 'ability_vectors_unavailable':
+			return {
+				label: '能力目录准备中',
+				reason: '能力目录向量尚未准备好，JD 原文已保存，可稍后重新分析。',
+			}
 		default:
 			return {
 				label: '分析失败',

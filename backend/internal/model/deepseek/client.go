@@ -28,7 +28,7 @@ const systemPrompt = `你是招聘岗位 JD 的结构化解析器。只提取原
   "employment_type": "internship、campus、social、unknown 四选一",
 	"responsibilities": ["逐字引用 JD 中描述实际工作的职责原文"],
 	"classifications": [{"category_code": "已有岗位大类 code，申请新增大类时为空", "specialty_code": "已有岗位小类 code，申请新增时为空", "relation": "primary 或 secondary", "evidence": "支持分类的职责原文逐字引用", "reason": "该职责为什么符合此小类，并说明与易混淆分类的区别", "candidate": null}],
-	"ability_requirements": [{"operator": "single、any_of、at_least_n 三选一", "required_count": 1, "requirement_kind": "required、preferred、unspecified 三选一", "evidence": "完整要求的 JD 原文逐字引用", "options": [{"name": "候选能力原文名称", "catalog_code": "能力目录 code，不能匹配则为空", "qualifier": "项目经验、Server 开发等必须保留的具体限定，没有则为空", "evidence": "该选项在 JD 中的逐字引用", "required_level": 0, "candidate": {"category_code":"建议能力大类 code","aliases":[],"definition":"候选能力定义","reason":"现有目录无法表达它的原因","nearest_candidate_codes":[]}}]}],
+	"ability_requirements": [{"operator": "single、any_of、at_least_n 三选一", "required_count": 1, "requirement_kind": "required、preferred、unspecified 三选一", "evidence": "完整要求的 JD 原文逐字引用", "options": [{"name": "候选能力原文名称", "qualifier": "项目经验、Server 开发等必须保留的具体限定，没有则为空", "evidence": "该选项在 JD 中的逐字引用"}]}],
   "conditions": ["学历、专业、年限、到岗时间等非能力条件"]
 }
 valid 表示可以确认是具有足够岗位信息的 JD；incomplete 表示像 JD，但缺少职责、要求等关键信息；invalid 表示不是 JD 或内容无法理解。
@@ -38,10 +38,7 @@ valid JD 必须选择恰好一个主导小类作为 primary，可以选择零个
 必须优先复用已有岗位目录。只有职责无法由任何已有小类准确表达时，才允许提交 candidate。已有大类合适但缺少小类时，保留真实 category_code、specialty_code 置空，并填写 scope=specialty；连大类都不合适时两个 code 都置空，并填写 scope=category。candidate 格式为 {"scope":"specialty|category","category_name":"仅新增大类时填写","category_definition":"仅新增大类时填写","specialty_name":"候选小类名称","definition":"定义","include_signals":["典型职责"],"exclude_signals":["不足以归类的信号"],"confused_with":[{"specialty_code":"真实已有小类 code","distinction":"区分规则"}],"reason":"现有目录不足的原因"}。candidate 只是待独立审核的申请，不代表已经进入目录。
 ability_requirements 只记录可学习或可评估的技术与工程能力，并把相互关联的候选项放在同一个匿名要求组中。single 表示唯一选项必须具备，一个 single 只能有一个 option，required_count 必须为 1；如果原文要求同时掌握多项能力，要分别返回多个 single。any_of 表示多个候选中任意一项即可，required_count 必须为 1；“至少一门”“至少一项”也属于 any_of，不得输出 at_least_n。at_least_n 只用于“至少两项/三项”等 N 大于等于 2 的要求，required_count 必须在 2 和 options 数量之间。不要把“任选其一”拆成多个 single，也不要把彼此独立的要求错误合并。同一段要求原文只能生成一个要求组；能力已经作为 any_of 或 at_least_n 的候选时，不得再根据同一段原文把它重复输出为 single。“包括但不限于”“任一”“至少一门”等表达必须按原文语义生成组合组，不能额外挑选其中第一项作为必备能力。
 requirement_kind 用来区分要求性质：明确必备或必须掌握填 required；“优先、加分、具备更佳”等加分要求填 preferred；原文没有清楚区分时填 unspecified。不要把 preferred 混入必备要求。
-每个 option 都要独立映射能力目录。Function Calling 与 MCP 开发是两个不同的标准能力，不能归入笼统的 Agent 开发。MCP Server、MCP Client、MCP Server/Client 都映射为同一个“MCP 开发”能力；它们出现在同一条要求中时只能返回一个 MCP 开发 option，并通过 raw label、qualifier 和 evidence 保留原文限定。MySQL 索引、事务等具体要求仍映射为 MySQL，不拆成新能力。学历、专业、工作年限、出勤时间放入 conditions。所有 evidence 必须能够在原文中逐字找到。
-当 catalog_code 为空时必须填写 candidate；candidate 只是审核申请材料，不能假定它已进入目录。category_code 从能力大类中选择，并说明现有目录为什么无法准确表达该项。
-每个 option 增加 mapping_reason：复用已有能力时说明原文表述在本 JD 中为什么对应该能力，目录名称完全一致时可以留空。保留原始 name，不直接修改能力别名；本次关联不代表公共同义关系已经通过审核。
-required_level 使用 L0-L5：0 未学习，1 了解概念，2 能在指导下完成基础任务，3 能独立完成常见任务，4 能处理复杂场景并作出技术取舍，5 能设计体系并指导他人。原文不足以判断时使用 null。`
+首次解析只提取能力原文、限定、逐字证据和要求关系，不进行能力目录映射，也不判断某项能力是否需要新增。不要输出 catalog_code、candidate、mapping_reason 或 required_level；能力目录归一化和等级判定由后续独立阶段完成。Function Calling、MCP Server 和 MCP Client 等不同原文表述要分别保留，不能自行归并成上位能力；MySQL 索引、事务等具体限定要保留。学历、专业、工作年限、出勤时间放入 conditions。所有 evidence 必须能够在原文中逐字找到。`
 
 type Client struct {
 	baseURL    string
@@ -149,13 +146,24 @@ func (c *Client) AnalyzeJD(ctx context.Context, apiKey, model, rawText string, c
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return jdanalysis.Result{}, jdanalysis.NewError("model_invalid_json", true, err)
 	}
+	// The extraction model never decides ability identity, even if it returns
+	// extra fields contrary to the prompt. The local exact match and vector
+	// normalization stages own all catalog associations.
+	for ri := range parsed.AbilityRequirements {
+		for oi := range parsed.AbilityRequirements[ri].Options {
+			option := &parsed.AbilityRequirements[ri].Options[oi]
+			option.CatalogCode = ""
+			option.Candidate = nil
+			option.MappingReason = ""
+			option.RequiredLevel = nil
+		}
+	}
 	return normalize(parsed, rawText, catalog)
 }
 
 func buildSystemPrompt(catalog jdanalysis.Catalog) string {
 	jobCatalog, _ := json.Marshal(catalog.JobCategories)
-	abilityCatalog, _ := json.Marshal(catalog.Abilities)
-	return systemPrompt + "\n岗位目录：" + string(jobCatalog) + "\n能力目录：" + string(abilityCatalog)
+	return systemPrompt + "\n岗位目录：" + string(jobCatalog)
 }
 
 func (c *Client) TestConnection(ctx context.Context, apiKey, model string) error {

@@ -3,6 +3,7 @@ package jdanalysis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -80,6 +81,25 @@ func TestVectorNormalizerDoesNotAutoAcceptNearestVector(t *testing.T) {
 	}
 	if search.calls != 1 || model.calls != 1 {
 		t.Fatal("expected one vector recall and one model judgment")
+	}
+}
+
+func TestVectorNormalizerWaitsForAbilityVectors(t *testing.T) {
+	search := &candidateSearch{}
+	n := &VectorNormalizer{Embedder: testEmbedder(t), Search: search, Model: &normalizeModel{}}
+	result := Result{AbilityRequirements: []AbilityRequirement{{Operator: RequirementSingle, RequiredCount: 1, Evidence: "熟悉 AutoGen", Options: []AbilityRequirementOption{{RawLabel: "AutoGen", Evidence: "AutoGen"}}}}}
+	_, err := n.Normalize(context.Background(), uuid.New(), "key", "model", Catalog{Abilities: []AbilityOption{{Code: "agent", Name: "Agent 开发", CategoryCode: "ai"}}}, result)
+	var classified *ClassifiedError
+	if !errors.As(err, &classified) || classified.FailureCode != "ability_vectors_unavailable" || !classified.CanRetry {
+		t.Fatalf("missing catalog vectors must not create a new ability: %v", err)
+	}
+}
+
+func TestVectorNormalizerRejectsIncompleteConfiguration(t *testing.T) {
+	_, err := (&VectorNormalizer{}).Normalize(context.Background(), uuid.New(), "key", "model", Catalog{}, Result{})
+	var classified *ClassifiedError
+	if !errors.As(err, &classified) || classified.FailureCode != "ability_normalization_unavailable" {
+		t.Fatalf("incomplete normalizer must not silently succeed: %v", err)
 	}
 }
 

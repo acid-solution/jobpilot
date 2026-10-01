@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -189,6 +190,9 @@ func (r *MarketRepository) UpdateRawText(ctx context.Context, userID, jdID uuid.
 		return market.JobDescription{}, fmt.Errorf("begin edit jd transaction: %w", err)
 	}
 	defer transaction.Rollback()
+	if err := lockUserMutationTx(ctx, transaction.Tx, userID); err != nil {
+		return market.JobDescription{}, err
+	}
 
 	var targetID uuid.UUID
 	err = transaction.QueryRowContext(ctx, `SELECT target_id FROM job_descriptions WHERE id=$1 AND user_id=$2 FOR UPDATE`, jdID, userID).Scan(&targetID)
@@ -216,12 +220,6 @@ func (r *MarketRepository) UpdateRawText(ctx context.Context, userID, jdID uuid.
 	if _, err = transaction.ExecContext(ctx, `DELETE FROM job_description_ability_requirements WHERE job_description_id=$1`, jdID); err != nil {
 		return market.JobDescription{}, fmt.Errorf("clear jd requirements: %w", err)
 	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM jd_ability_level_jobs WHERE job_description_id=$1`, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("clear JD ability grading job: %w", err)
-	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM jd_ability_level_assessments WHERE job_description_id=$1`, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("clear JD ability levels: %w", err)
-	}
 	if _, err = transaction.ExecContext(ctx, `DELETE FROM ability_review_requests request WHERE request.review_type='ability' AND request.status<>'succeeded' AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.review_request_id=request.id)`); err != nil {
 		return market.JobDescription{}, fmt.Errorf("clear orphaned ability reviews: %w", err)
 	}
@@ -235,6 +233,9 @@ func (r *MarketRepository) UpdateRawText(ctx context.Context, userID, jdID uuid.
 			return market.JobDescription{}, r.duplicateError(ctx, userID, targetID, rawTextHash, jdID)
 		}
 		return market.JobDescription{}, fmt.Errorf("update jd text: %w", err)
+	}
+	if err := enqueueJDAbilityGrading(ctx, transaction.Tx, userID, targetID, jdID); err != nil {
+		return market.JobDescription{}, fmt.Errorf("invalidate edited JD grading input: %w", err)
 	}
 	result, err := transaction.ExecContext(ctx, `UPDATE analysis_jobs SET status='queued',attempts=0,next_attempt_at=NOW(),locked_at=NULL,lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,last_error=NULL,preserve_previous_result=FALSE,updated_at=NOW() WHERE job_description_id=$1 AND job_type='jd_analysis'`, jdID)
 	if err != nil {
@@ -321,8 +322,12 @@ func (r *MarketRepository) FindByID(ctx context.Context, userID, jdID uuid.UUID)
 
 func (r *MarketRepository) loadJDAbilityLevels(ctx context.Context, jd *market.JobDescription) error {
 	jd.AbilityLevels = []market.JDAbilityLevel{}
-	err := r.database.QueryRowContext(ctx, `SELECT COALESCE(status,'not_started'),COALESCE(last_error,'')
-		FROM jd_ability_level_jobs WHERE job_description_id=$1`, jd.ID).Scan(&jd.AbilityGrading.Status, &jd.AbilityGrading.Error)
+	err := r.database.QueryRowContext(ctx, `SELECT job.status,COALESCE(job.last_error,''),
+		(jd.status<>'included' OR jd.validation_status<>'valid') AND job.status IN ('queued','failed'),
+		job.result_fingerprint<>jd_ability_grading_fingerprint(jd.id,$2)
+		FROM jd_ability_level_jobs job JOIN job_descriptions jd ON jd.id=job.job_description_id
+		WHERE job.job_description_id=$1`, jd.ID, abilitygrading.PromptVersion).Scan(
+		&jd.AbilityGrading.Status, &jd.AbilityGrading.Error, &jd.AbilityGrading.Paused, &jd.AbilityGrading.Stale)
 	if errors.Is(err, sql.ErrNoRows) {
 		jd.AbilityGrading.Status = "not_started"
 	} else if err != nil {
@@ -518,11 +523,12 @@ func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID
 	}
 
 	if err := r.database.QueryRowContext(ctx, `SELECT
-		COUNT(*) FILTER(WHERE level_job.status IN ('queued','running') OR (level_job.status='failed' AND level_job.attempts<level_job.max_attempts)),
+		COUNT(*) FILTER(WHERE level_job.status IN ('queued','running') OR (level_job.status='failed' AND level_job.attempts<level_job.max_attempts)
+		    OR level_job.input_fingerprint<>jd_ability_grading_fingerprint(jd.id,$3)),
 		COUNT(*) FILTER(WHERE level_job.status='failed' AND level_job.attempts>=level_job.max_attempts)
 		FROM jd_ability_level_jobs level_job
 		JOIN job_descriptions jd ON jd.id=level_job.job_description_id
-		WHERE jd.user_id=$1 AND jd.target_id=$2 AND jd.status='included' AND jd.validation_status='valid'`, userID, targetID,
+		WHERE jd.user_id=$1 AND jd.target_id=$2 AND jd.status='included' AND jd.validation_status='valid'`, userID, targetID, abilitygrading.PromptVersion,
 	).Scan(&profile.AbilityGradingPendingCount, &profile.AbilityGradingFailedCount); err != nil {
 		return market.Profile{}, fmt.Errorf("count JD ability grading jobs: %w", err)
 	}
@@ -539,8 +545,10 @@ func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID
 		assessment.reason,assessment.confidence
 		FROM jd_ability_level_assessments assessment
 		JOIN job_descriptions jd ON jd.id=assessment.job_description_id
+		JOIN jd_ability_level_jobs level_job ON level_job.job_description_id=jd.id
 		WHERE jd.user_id=$1 AND jd.target_id=$2 AND jd.status='included' AND jd.validation_status='valid'
-		ORDER BY jd.created_at,assessment.created_at`, userID, targetID)
+		  AND level_job.result_fingerprint=jd_ability_grading_fingerprint(jd.id,$3)
+		ORDER BY jd.created_at,assessment.created_at`, userID, targetID, abilitygrading.PromptVersion)
 	if err != nil {
 		return market.Profile{}, fmt.Errorf("load market ability levels: %w", err)
 	}
@@ -573,7 +581,8 @@ func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID
 	assessmentRows.Close()
 
 	statusRows, err := r.database.QueryContext(ctx, `SELECT option.ability_id,
-		COUNT(DISTINCT jd.id) FILTER(WHERE level_job.status IN ('queued','running') OR (level_job.status='failed' AND level_job.attempts<level_job.max_attempts)),
+		COUNT(DISTINCT jd.id) FILTER(WHERE level_job.status IN ('queued','running') OR (level_job.status='failed' AND level_job.attempts<level_job.max_attempts)
+		    OR level_job.input_fingerprint<>jd_ability_grading_fingerprint(jd.id,$3)),
 		COUNT(DISTINCT jd.id) FILTER(WHERE level_job.status='failed' AND level_job.attempts>=level_job.max_attempts)
 		FROM job_description_ability_requirement_options option
 		JOIN job_description_ability_requirements requirement ON requirement.id=option.requirement_id
@@ -581,7 +590,7 @@ func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID
 		LEFT JOIN jd_ability_level_jobs level_job ON level_job.job_description_id=jd.id
 		WHERE jd.user_id=$1 AND jd.target_id=$2 AND jd.status='included' AND jd.validation_status='valid'
 		  AND option.ability_id IS NOT NULL
-		GROUP BY option.ability_id`, userID, targetID)
+		GROUP BY option.ability_id`, userID, targetID, abilitygrading.PromptVersion)
 	if err != nil {
 		return market.Profile{}, fmt.Errorf("load market ability grading status: %w", err)
 	}

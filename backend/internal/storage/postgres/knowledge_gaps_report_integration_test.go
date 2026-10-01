@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
@@ -22,7 +23,7 @@ func TestKnowledgeGapReportTenJDsAndStalenessIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	userID, targetID := uuid.New(), uuid.New()
 	var goID, pythonID uuid.UUID
@@ -36,7 +37,12 @@ func TestKnowledgeGapReportTenJDsAndStalenessIntegration(t *testing.T) {
 		_, _ = db.Exec(`DELETE FROM user_capability_level_events WHERE user_id=$1`, userID)
 		_, _ = db.Exec(`DELETE FROM user_capability_profiles WHERE user_id=$1`, userID)
 		_, _ = db.Exec(`DELETE FROM user_profile_settings WHERE user_id=$1`, userID)
-		_, _ = db.Exec(`DELETE FROM job_targets WHERE id=$1`, targetID)
+		if _, err := db.Exec(`DELETE FROM job_descriptions WHERE target_id=$1`, targetID); err != nil {
+			t.Error(err)
+		}
+		if _, err := db.Exec(`DELETE FROM job_targets WHERE id=$1`, targetID); err != nil {
+			t.Error(err)
+		}
 	})
 	if _, err := db.ExecContext(ctx, `INSERT INTO job_targets(id,user_id,title,employment_type,directions,catalog_status) VALUES($1,$2,'后端开发','internship','[]'::jsonb,'valid')`, targetID, userID); err != nil {
 		t.Fatal(err)
@@ -89,6 +95,12 @@ func TestKnowledgeGapReportTenJDsAndStalenessIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO jd_ability_level_jobs(user_id,target_id,job_description_id,status,
+			input_fingerprint,result_fingerprint,result_snapshot,prompt_version)
+			VALUES($1,$2,$3,'succeeded',jd_ability_grading_fingerprint($3,$4),jd_ability_grading_fingerprint($3,$4),
+			jd_ability_grading_snapshot($3),$4)`, userID, targetID, jdID, abilitygrading.PromptVersion); err != nil {
+			t.Fatal(err)
+		}
 	}
 	profiles := profile.NewService(NewProfileRepository(db), nil)
 	if _, err := profiles.SaveSettings(ctx, userID, profile.Settings{WeeklyHours: intPtr(12), ExpectedWeeks: intPtr(8), ExistingExperience: "暂无"}); err != nil {
@@ -130,7 +142,7 @@ func TestKnowledgeGapReportTenJDsAndStalenessIntegration(t *testing.T) {
 	if len(updated.Report.Gaps) != 0 || len(updated.Report.Met) != 2 {
 		t.Fatalf("manual correction did not update report: %+v", updated.Report)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO jd_ability_level_jobs(user_id,target_id,job_description_id,status,attempts) VALUES($1,$2,$3,'failed',3)`, userID, targetID, firstJDID); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET status='failed',attempts=3 WHERE job_description_id=$1`, firstJDID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewMarketRepository(db).RetryAbilityGrading(ctx, userID, firstJDID); err != nil {

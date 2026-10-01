@@ -25,7 +25,14 @@ func TestAbilityGradingLeaseAndAtomicReplacementIntegration(t *testing.T) {
 	defer cancel()
 
 	userID, targetID, jdID := uuid.New(), uuid.New(), uuid.New()
-	t.Cleanup(func() { _, _ = database.Exec("DELETE FROM job_targets WHERE id=$1", targetID) })
+	t.Cleanup(func() {
+		if _, err := database.Exec("DELETE FROM job_descriptions WHERE target_id=$1", targetID); err != nil {
+			t.Error(err)
+		}
+		if _, err := database.Exec("DELETE FROM job_targets WHERE id=$1", targetID); err != nil {
+			t.Error(err)
+		}
+	})
 	if _, err := database.ExecContext(ctx, `INSERT INTO job_targets(id,user_id,title,employment_type,directions,catalog_status)
 		VALUES($1,$2,'后端开发','internship','[]'::jsonb,'valid')`, targetID, userID); err != nil {
 		t.Fatal(err)

@@ -69,6 +69,8 @@ export interface JobDescription {
 	ability_grading: {
 		status: 'not_started' | 'queued' | 'running' | 'succeeded' | 'failed'
 		error?: string
+		paused?: boolean
+		stale?: boolean
 	}
 }
 

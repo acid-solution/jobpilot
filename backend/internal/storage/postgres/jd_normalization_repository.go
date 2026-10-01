@@ -321,10 +321,8 @@ func (r *JDNormalizationRepository) CompleteNormalization(ctx context.Context, j
 		job.JobDescriptionID, mentions, jdanalysis.NormalizationPromptVersion); err != nil {
 		return err
 	}
-	if status == "included" {
-		if err = enqueueJDAbilityGrading(ctx, tx, job.UserID, targetID, job.JobDescriptionID); err != nil {
-			return err
-		}
+	if err = enqueueJDAbilityGrading(ctx, tx, job.UserID, targetID, job.JobDescriptionID); err != nil {
+		return err
 	}
 	finished, err := tx.ExecContext(ctx, `UPDATE jd_normalization_jobs SET status='succeeded',lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,
 		last_error='',updated_at=NOW() WHERE id=$1 AND status='running' AND lease_token=$2`, job.ID, job.LeaseToken)

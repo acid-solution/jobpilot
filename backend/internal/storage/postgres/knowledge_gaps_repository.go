@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/google/uuid"
 )
@@ -27,9 +28,12 @@ func (r *KnowledgeGapsRepository) LoadRequirements(ctx context.Context, userID, 
 		JOIN job_description_ability_requirements requirement ON requirement.job_description_id=jd.id
 		JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id
 		LEFT JOIN abilities ability ON ability.id=option.ability_id
+		LEFT JOIN jd_ability_level_jobs level_job ON level_job.job_description_id=jd.id
 		LEFT JOIN jd_ability_option_levels grade ON grade.option_id=option.id
+		    AND grade.ability_id=option.ability_id
+		    AND level_job.result_fingerprint=jd_ability_grading_fingerprint(jd.id,$3)
 		WHERE jd.user_id=$1 AND jd.target_id=$2 AND jd.status='included' AND jd.validation_status='valid'
-		ORDER BY jd.id,requirement.sort_order,option.sort_order`, userID, targetID)
+		ORDER BY jd.id,requirement.sort_order,option.sort_order`, userID, targetID, abilitygrading.PromptVersion)
 	if err != nil {
 		return nil, fmt.Errorf("load gap requirements: %w", err)
 	}

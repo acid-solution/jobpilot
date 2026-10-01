@@ -782,10 +782,15 @@ export function MarketPage() {
 				  {selectedJD.abilityLevels?.length ? <div className="jd-ability-level-list">{selectedJD.abilityLevels.map((item) => <article key={`${item.ability_id}-${item.requirement_kind}`}>
 					<header><strong>{item.name}</strong><span>L{item.level} · {levelSourceLabel(item.source)} · {requirementKindLabel(item.requirement_kind)}</span></header>
 					<p>{item.evidence}</p><small>{item.reason}</small>
-				  </article>)}</div>
-				  : selectedJD.abilityGrading?.status === 'failed'
-					? <div className="detail-status-card"><AlertCircle size={17} /><div><strong>能力等级判定暂时失败</strong><p>JD 解析结果仍然保留，可以单独重新判级。</p><button className="button retry-button" type="button" onClick={() => void retryAbilityGrading(selectedJD.id)}><RotateCcw size={15} />重新判级</button></div></div>
-					: selectedJD.abilities.length > 0 ? <p className="detail-muted">正在按每项能力的 L0～L5 标准判断这份 JD 的要求等级。</p> : null}
+				  </article>)}</div> : null}
+				  {selectedJD.abilityGrading?.stale && !!selectedJD.abilityLevels?.length && <p className="detail-muted">以上为上次成功的判级结果，资料或等级标准已变化，暂不参与当前市场等级统计。</p>}
+				  {selectedJD.abilityGrading?.paused
+					? <p className="detail-muted">这份 JD 暂未计入当前目标，已保留判级结果和任务；再次计入后复用有效结果或继续判级。</p>
+					: selectedJD.abilityGrading?.status === 'failed'
+					  ? <div className="detail-status-card"><AlertCircle size={17} /><div><strong>能力等级判定暂时失败</strong><p>JD 解析结果和上次成功的等级仍然保留，可以单独重新判级。</p><button className="button retry-button" type="button" onClick={() => void retryAbilityGrading(selectedJD.id)}><RotateCcw size={15} />重新判级</button></div></div>
+					  : selectedJD.abilityGrading?.status === 'queued' || selectedJD.abilityGrading?.status === 'running'
+						? <p className="detail-muted">正在按每项能力的 L0～L5 标准判断这份 JD 的要求等级。</p>
+						: !selectedJD.abilityLevels?.length && selectedJD.abilities.length > 0 ? <p className="detail-muted">能力等级尚未生成。</p> : null}
 				  {!selectedJD.abilityLevels?.length && selectedJD.abilityEvidence?.length ? <div className="ability-evidence-list">{selectedJD.abilityEvidence.map((item) => <p key={`${item.name}-${item.evidence}`}><strong>{item.name}</strong><span>{item.evidence}</span></p>)}</div> : null}
                 </section>
 				{(selectedJD.abilityReview?.pending_count ?? 0) > 0 && <section className="detail-status-card">

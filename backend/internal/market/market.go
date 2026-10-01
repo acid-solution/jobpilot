@@ -76,6 +76,8 @@ type AbilityReviewSummary struct {
 type AbilityGradingSummary struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
+	Paused bool   `json:"paused"`
+	Stale  bool   `json:"stale"`
 }
 
 type AbilityEvidence struct {

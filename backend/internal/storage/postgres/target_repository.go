@@ -85,6 +85,9 @@ func (r *TargetRepository) UpsertCurrent(ctx context.Context, userID uuid.UUID, 
 		return target.Target{}, fmt.Errorf("begin target transaction: %w", err)
 	}
 	defer transaction.Rollback()
+	if err := lockUserMutationTx(ctx, transaction.Tx, userID); err != nil {
+		return target.Target{}, err
+	}
 
 	directions, title, err := resolveTargetDirections(ctx, transaction.Tx, input.Directions)
 	if err != nil {
@@ -227,9 +230,9 @@ func reclassifyTargetJobDescriptions(ctx context.Context, transaction *sql.Tx, t
 			if err := enqueuePendingAbilityReviewsForJD(ctx, transaction, value.id, userID); err != nil {
 				return err
 			}
-			if err := enqueueJDAbilityGrading(ctx, transaction, userID, targetID, value.id); err != nil {
-				return fmt.Errorf("enqueue JD ability grading after target change: %w", err)
-			}
+		}
+		if err := enqueueJDAbilityGrading(ctx, transaction, userID, targetID, value.id); err != nil {
+			return fmt.Errorf("synchronize JD ability grading after target change: %w", err)
 		}
 	}
 	return nil

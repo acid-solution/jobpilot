@@ -238,9 +238,6 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 	if !leaseValid {
 		return abilityreview.ErrLeaseLost
 	}
-	if err := enqueueAbilityGradingForReview(ctx, tx, input.ID); err != nil {
-		return err
-	}
 	var abilityID uuid.UUID
 	switch result.Decision {
 	case "reuse_existing":
@@ -303,6 +300,9 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 		}
 	}
 	var resolved any = nil
+	if err := enqueueAbilityGradingForReview(ctx, tx, affectedJDs...); err != nil {
+		return err
+	}
 	if abilityID != uuid.Nil {
 		resolved = abilityID
 	}
@@ -456,16 +456,33 @@ func requireReviewLease(result sql.Result) error {
 	return nil
 }
 
-func enqueueAbilityGradingForReview(ctx context.Context, tx *sql.Tx, requestID uuid.UUID) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO jd_ability_level_jobs(user_id,target_id,job_description_id,status,attempts,next_attempt_at)
-		SELECT DISTINCT jd.user_id,jd.target_id,jd.id,'queued',0,NOW()
-		FROM job_description_ability_requirement_options option
-		JOIN job_description_ability_requirements requirement ON requirement.id=option.requirement_id
-		JOIN job_descriptions jd ON jd.id=requirement.job_description_id
-		WHERE option.review_request_id=$1 AND jd.status='included' AND jd.validation_status='valid'
-		ON CONFLICT(job_description_id) DO UPDATE SET status='queued',attempts=0,next_attempt_at=NOW(),
-		lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,last_error=NULL,completed_at=NULL,updated_at=NOW()`, requestID)
-	return err
+func enqueueAbilityGradingForReview(ctx context.Context, tx *sql.Tx, jdIDs ...uuid.UUID) error {
+	rows, err := tx.QueryContext(ctx, `SELECT jd.user_id,jd.target_id,jd.id FROM job_descriptions jd
+		WHERE jd.id=ANY($1) AND jd.validation_status='valid'`, uuidArray(jdIDs))
+	if err != nil {
+		return err
+	}
+	type item struct{ userID, targetID, jdID uuid.UUID }
+	var items []item
+	for rows.Next() {
+		var value item
+		if err := rows.Scan(&value.userID, &value.targetID, &value.jdID); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, value)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, value := range items {
+		if err := enqueueJDAbilityGrading(ctx, tx, value.userID, value.targetID, value.jdID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cleanupRequirementGroups(ctx context.Context, tx *sql.Tx, jdIDs ...uuid.UUID) error {

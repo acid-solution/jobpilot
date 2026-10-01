@@ -321,17 +321,8 @@ func (r *AnalysisRepository) Complete(ctx context.Context, job jdanalysis.Job, r
 	); err != nil {
 		return fmt.Errorf("save JD analysis: %w", err)
 	}
-	if jdStatus == "included" {
-		if err := enqueueJDAbilityGrading(ctx, transaction, job.UserID, job.TargetID, job.JobDescriptionID); err != nil {
-			return fmt.Errorf("enqueue JD ability grading: %w", err)
-		}
-	} else {
-		if _, err := transaction.ExecContext(ctx, `DELETE FROM jd_ability_level_jobs WHERE job_description_id=$1`, job.JobDescriptionID); err != nil {
-			return fmt.Errorf("clear irrelevant JD ability grading job: %w", err)
-		}
-		if _, err := transaction.ExecContext(ctx, `DELETE FROM jd_ability_level_assessments WHERE job_description_id=$1`, job.JobDescriptionID); err != nil {
-			return fmt.Errorf("clear irrelevant JD ability levels: %w", err)
-		}
+	if err := enqueueJDAbilityGrading(ctx, transaction, job.UserID, job.TargetID, job.JobDescriptionID); err != nil {
+		return fmt.Errorf("synchronize JD ability grading: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit analysis completion: %w", err)
@@ -474,6 +465,9 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 	}
 	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_abilities WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
 		return classificationOutcome{}, fmt.Errorf("clear JD abilities: %w", err)
+	}
+	if err := invalidateRunningJDAbilityGrading(ctx, transaction, job.JobDescriptionID); err != nil {
+		return classificationOutcome{}, err
 	}
 	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_ability_requirements WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
 		return classificationOutcome{}, fmt.Errorf("clear JD ability requirements: %w", err)

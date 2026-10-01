@@ -47,14 +47,10 @@ func (r *AbilityGradingRepository) RecoverExpired(ctx context.Context) (int64, e
 }
 
 func (r *AbilityGradingRepository) Claim(ctx context.Context, lease time.Duration) (abilitygrading.Input, error) {
-	// A target change can make a previously queued job irrelevant. Finish those
-	// jobs without deleting their last successful assessments; a later target
-	// change back to included will explicitly enqueue a fresh run.
-	_, _ = r.database.ExecContext(ctx, `UPDATE jd_ability_level_jobs job
-		SET status='succeeded',last_error='not_in_market',updated_at=NOW(),completed_at=NOW()
-		FROM job_descriptions jd
-		WHERE jd.id=job.job_description_id AND jd.status<>'included'
-		  AND job.status IN ('queued','failed')`)
+	// Relevance controls scheduling, never result retention or task success.
+	if err := r.refreshChangedInputs(ctx); err != nil {
+		return abilitygrading.Input{}, err
+	}
 
 	token := uuid.New()
 	var input abilitygrading.Input
@@ -72,13 +68,14 @@ func (r *AbilityGradingRepository) Claim(ctx context.Context, lease time.Duratio
 		ORDER BY job.created_at FOR UPDATE OF job SKIP LOCKED LIMIT 1
 	) UPDATE jd_ability_level_jobs job
 	SET status='running',attempts=job.attempts+1,lease_token=$1,heartbeat_at=NOW(),
-	    lease_expires_at=NOW()+($2*INTERVAL '1 millisecond'),updated_at=NOW()
+	    lease_expires_at=NOW()+($2*INTERVAL '1 millisecond'),updated_at=NOW(),
+	    input_fingerprint=jd_ability_grading_fingerprint(jd.id,$3)
 	FROM candidate,job_descriptions jd
 	WHERE job.id=candidate.id AND jd.id=job.job_description_id
 	RETURNING job.id,job.user_id,job.target_id,job.job_description_id,job.lease_token,
-	          job.attempts,job.max_attempts,COALESCE(jd.title,''),jd.responsibilities,jd.raw_text`, token, lease.Milliseconds()).Scan(
+	          job.attempts,job.max_attempts,COALESCE(jd.title,''),jd.responsibilities,jd.raw_text,job.input_fingerprint`, token, lease.Milliseconds(), abilitygrading.PromptVersion).Scan(
 		&input.ID, &input.UserID, &input.TargetID, &input.JobDescriptionID, &input.LeaseToken,
-		&input.Attempts, &input.MaxAttempts, &input.Title, &responsibilities, &input.RawText)
+		&input.Attempts, &input.MaxAttempts, &input.Title, &responsibilities, &input.RawText, &input.SourceFingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return input, abilitygrading.ErrNoJob
 	}
@@ -204,12 +201,35 @@ func (r *AbilityGradingRepository) Complete(ctx context.Context, input abilitygr
 	if err := lockUserMutationTx(ctx, tx, input.UserID); err != nil {
 		return err
 	}
+	var leaseValid bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jd_ability_level_jobs
+		WHERE id=$1 AND status='running' AND lease_token=$2 FOR UPDATE)`, input.ID, input.LeaseToken).Scan(&leaseValid); err != nil {
+		return err
+	}
+	if !leaseValid {
+		return abilitygrading.ErrLeaseLost
+	}
+	var currentFingerprint string
+	if err := tx.QueryRowContext(ctx, `SELECT jd_ability_grading_fingerprint($1,$2)`, input.JobDescriptionID, abilitygrading.PromptVersion).Scan(&currentFingerprint); err != nil {
+		return err
+	}
+	if input.SourceFingerprint == "" || currentFingerprint != input.SourceFingerprint {
+		// The source changed while the model was running. Synchronize the new
+		// input, but never accept the outdated result or erase the last success.
+		if err := enqueueJDAbilityGrading(ctx, tx, input.UserID, input.TargetID, input.JobDescriptionID); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return abilitygrading.ErrLeaseLost
+	}
 	updated, err := tx.ExecContext(ctx, `UPDATE jd_ability_level_jobs
 		SET status='succeeded',last_error=NULL,lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,
 		    provider=$3,model=$4,prompt_version=$5,provider_request_id=$6,input_tokens=$7,output_tokens=$8,
-		    completed_at=NOW(),updated_at=NOW()
+		    completed_at=NOW(),updated_at=NOW(),result_fingerprint=$9
 		WHERE id=$1 AND status='running' AND lease_token=$2`, input.ID, input.LeaseToken,
-		result.Provider, result.Model, result.PromptVersion, result.ProviderRequestID, result.InputTokens, result.OutputTokens)
+		result.Provider, result.Model, result.PromptVersion, result.ProviderRequestID, result.InputTokens, result.OutputTokens, input.SourceFingerprint)
 	if err != nil {
 		return err
 	}
@@ -249,6 +269,10 @@ func (r *AbilityGradingRepository) Complete(ctx context.Context, input abilitygr
 			assessment.Reason, assessment.Confidence, abilitygrading.PromptVersion); err != nil {
 			return fmt.Errorf("save JD ability assessment: %w", err)
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET result_snapshot=jd_ability_grading_snapshot($1)
+		WHERE job_description_id=$1`, input.JobDescriptionID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -407,15 +431,109 @@ func truncateErrorCode(value string) string {
 
 func enqueueJDAbilityGrading(ctx context.Context, tx *sql.Tx, userID, targetID, jdID uuid.UUID) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO jd_ability_level_jobs(
-		user_id,target_id,job_description_id,status,attempts,next_attempt_at)
-	SELECT $1,$2,$3,'queued',0,NOW()
+		user_id,target_id,job_description_id,status,input_fingerprint)
+	SELECT $1,$2,$3,'queued',jd_ability_grading_fingerprint($3,$4)
 	WHERE EXISTS(
 		SELECT 1 FROM job_description_ability_requirements requirement
 		JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id
-		WHERE requirement.job_description_id=$3 AND option.ability_id IS NOT NULL
+		JOIN job_descriptions jd ON jd.id=requirement.job_description_id
+		WHERE jd.id=$3 AND jd.validation_status='valid' AND option.ability_id IS NOT NULL
 	)
-	ON CONFLICT(job_description_id) DO UPDATE SET
-		user_id=EXCLUDED.user_id,target_id=EXCLUDED.target_id,status='queued',attempts=0,next_attempt_at=NOW(),
-		lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,last_error=NULL,completed_at=NULL,updated_at=NOW()`, userID, targetID, jdID)
+	ON CONFLICT(job_description_id) DO NOTHING`, userID, targetID, jdID, abilitygrading.PromptVersion)
+	if err != nil {
+		return err
+	}
+	var current, input, result string
+	err = tx.QueryRowContext(ctx, `SELECT jd_ability_grading_fingerprint($1,$2),input_fingerprint,result_fingerprint
+		FROM jd_ability_level_jobs WHERE job_description_id=$1 FOR UPDATE`, jdID, abilitygrading.PromptVersion).Scan(&current, &input, &result)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current == result {
+		// The FK cascade may have removed option grades during a reparse. Map
+		// the snapshot to the new IDs, without rerunning the model.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO jd_ability_option_levels(
+			option_id,job_description_id,ability_id,level,source,requirement_kind,evidence_quote,reason,confidence,prompt_version,created_at)
+			SELECT option.id,$1,option.ability_id,(saved.value->>'level')::int,saved.value->>'source',saved.value->>'kind',
+				saved.value->>'evidence',saved.value->>'reason',(saved.value->>'confidence')::float8,saved.value->>'prompt',
+				(saved.value->>'created_at')::timestamptz
+			FROM job_description_ability_requirements requirement
+			JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id
+			JOIN jd_ability_level_jobs job ON job.job_description_id=requirement.job_description_id
+			CROSS JOIN LATERAL (SELECT value FROM jsonb_array_elements(job.result_snapshot) value
+				WHERE value->'option_key'=jd_ability_grading_option_key(option.id)
+				ORDER BY (value->>'level')::int DESC LIMIT 1) saved
+			WHERE requirement.job_description_id=$1 AND option.ability_id IS NOT NULL
+			ON CONFLICT(option_id) DO NOTHING`, jdID); err != nil {
+			return fmt.Errorf("restore JD option grades: %w", err)
+		}
+		// Keep attempts, completion time and usage metadata from the success.
+		_, err = tx.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET status='succeeded',input_fingerprint=$2,
+			lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=NOW()
+			WHERE job_description_id=$1 AND (status<>'succeeded' OR input_fingerprint<>$2 OR last_error IS NOT NULL)`, jdID, current)
+		return err
+	}
+	if current == input {
+		return nil // Preserve a queued/running/failed attempt and its retry state.
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET user_id=$2,target_id=$3,status='queued',attempts=0,
+		next_attempt_at=NOW(),input_fingerprint=$4,lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,
+		last_error=NULL,completed_at=NULL,updated_at=NOW() WHERE job_description_id=$1`, jdID, userID, targetID, current)
 	return err
+}
+
+// Used before replacing requirement rows: even an identical semantic input
+// receives new option IDs, so a worker holding the old IDs must lose its lease.
+func invalidateRunningJDAbilityGrading(ctx context.Context, tx *sql.Tx, jdID uuid.UUID) error {
+	_, err := tx.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET status='queued',next_attempt_at=NOW(),attempts=GREATEST(attempts-1,0),
+		lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,updated_at=NOW()
+		WHERE job_description_id=$1 AND status='running'`, jdID)
+	return err
+}
+
+func (r *AbilityGradingRepository) refreshChangedInputs(ctx context.Context) error {
+	rows, err := r.database.QueryContext(ctx, `SELECT job.user_id,job.target_id,jd.id
+		FROM jd_ability_level_jobs job JOIN job_descriptions jd ON jd.id=job.job_description_id
+		WHERE jd.status='included' AND jd.validation_status='valid'
+		  AND job.input_fingerprint<>jd_ability_grading_fingerprint(jd.id,$1)
+		ORDER BY job.created_at LIMIT 20`, abilitygrading.PromptVersion)
+	if err != nil {
+		return err
+	}
+	type item struct{ userID, targetID, jdID uuid.UUID }
+	var items []item
+	for rows.Next() {
+		var value item
+		if err := rows.Scan(&value.userID, &value.targetID, &value.jdID); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, value)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, value := range items {
+		tx, err := r.database.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		err = lockUserMutationTx(ctx, tx, value.userID)
+		if err == nil {
+			err = enqueueJDAbilityGrading(ctx, tx, value.userID, value.targetID, value.jdID)
+		}
+		if err == nil {
+			err = tx.Commit()
+		}
+		tx.Rollback()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -38,17 +38,18 @@ type Ability struct {
 }
 
 type Input struct {
-	ID               uuid.UUID
-	UserID           uuid.UUID
-	TargetID         uuid.UUID
-	JobDescriptionID uuid.UUID
-	LeaseToken       uuid.UUID
-	Attempts         int
-	MaxAttempts      int
-	Title            string
-	Responsibilities []string
-	RawText          string
-	Abilities        []Ability
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	TargetID          uuid.UUID
+	JobDescriptionID  uuid.UUID
+	LeaseToken        uuid.UUID
+	SourceFingerprint string
+	Attempts          int
+	MaxAttempts       int
+	Title             string
+	Responsibilities  []string
+	RawText           string
+	Abilities         []Ability
 }
 
 type Assessment struct {

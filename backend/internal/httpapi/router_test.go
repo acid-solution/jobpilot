@@ -10,6 +10,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -52,9 +53,17 @@ func TestUserMutationsAreLockedButAgentRequestsAreNotNested(t *testing.T) {
 	user := uuid.New()
 	locker := &mutationLockerRecorder{}
 	router := gin.New()
+	router.ContextWithFallback = true
 	group := router.Group("/api/v1")
 	group.Use(identity.Middleware(identity.DevResolver{DefaultUserID: user}), serializeUserMutations(locker))
-	group.POST("/jds", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	var retainedCtx context.Context
+	group.POST("/jds", func(c *gin.Context) {
+		if !mutationlock.HeldBy(c, user) {
+			t.Fatal("the handler cannot see its account lock scope")
+		}
+		retainedCtx = c.Request.Context()
+		c.Status(http.StatusNoContent)
+	})
 	group.GET("/jds", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	group.POST("/agent/conversations/test/actions/test", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	for _, request := range []struct{ method, path string }{
@@ -70,6 +79,9 @@ func TestUserMutationsAreLockedButAgentRequestsAreNotNested(t *testing.T) {
 	}
 	if len(locker.users) != 1 || locker.users[0] != user || locker.released != 1 {
 		t.Fatalf("mutation lock not scoped to the write request: users=%v released=%d", locker.users, locker.released)
+	}
+	if mutationlock.HeldBy(retainedCtx, user) {
+		t.Fatal("a finished request retained an active account lock scope")
 	}
 }
 

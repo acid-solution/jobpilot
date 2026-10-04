@@ -52,6 +52,15 @@ func (l *UserMutationLocker) Lock(ctx context.Context, userID uuid.UUID) (func()
 }
 
 func lockUserMutationTx(ctx context.Context, tx *sql.Tx, userID uuid.UUID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Page middleware holds this lock on a separate connection. Acquiring it
+	// again here would wait on the same request. Direct/worker callers still
+	// acquire it in their business transaction; Agent calls reuse one connection.
+	if mutationlock.HeldBy(ctx, userID) {
+		return nil
+	}
 	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, mutationlock.Key(userID))
 	return err
 }

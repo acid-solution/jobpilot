@@ -87,6 +87,9 @@ type Dependencies struct {
 
 func NewRouter(dependencies Dependencies) *gin.Engine {
 	router := gin.New()
+	// Handlers pass *gin.Context to services. Forward request deadlines and
+	// values, including the account lock scope, to those repository calls.
+	router.ContextWithFallback = true
 	router.Use(gin.Logger(), gin.Recovery())
 
 	router.GET("/health/live", func(c *gin.Context) {
@@ -179,6 +182,9 @@ func serializeUserMutations(locker mutationlock.Locker) gin.HandlerFunc {
 			return
 		}
 		defer release()
+		lockedCtx, invalidate := mutationlock.WithHeldLock(c.Request.Context(), identity.UserID(c))
+		defer invalidate()
+		c.Request = c.Request.WithContext(lockedCtx)
 		c.Next()
 	}
 }

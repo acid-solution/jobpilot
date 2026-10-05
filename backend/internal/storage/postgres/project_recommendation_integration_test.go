@@ -123,10 +123,11 @@ func TestProjectRecommendationLeaseAndAtomicReplacement(t *testing.T) {
 		t.Fatalf("completed research progress=%+v err=%v", progress, err)
 	}
 	report := projectrecs.Report{ID: uuid.New(), TargetTitle: "测试目标", Projects: []projectrecs.Project{{Draft: projectrecs.Draft{ID: "p1", Title: "项目一"}}}}
-	if err = r.Complete(ctx, first, report); !errors.Is(err, projectrecs.ErrLeaseLost) {
+	validate := func(context.Context) error { return nil }
+	if err = r.Complete(ctx, first, report, validate); !errors.Is(err, projectrecs.ErrLeaseLost) {
 		t.Fatalf("stale worker wrote result: %v", err)
 	}
-	if err = r.Complete(ctx, second, report); err != nil {
+	if err = r.Complete(ctx, second, report, validate); err != nil {
 		t.Fatal(err)
 	}
 	if err = r.Select(ctx, user, ss.GoalSignature, report.ID, "p1"); err != nil {
@@ -145,7 +146,7 @@ func TestProjectRecommendationLeaseAndAtomicReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	newReport := projectrecs.Report{ID: uuid.New(), TargetTitle: "测试目标", Projects: []projectrecs.Project{}}
-	if err = r.Complete(ctx, third, newReport); err != nil {
+	if err = r.Complete(ctx, third, newReport, validate); err != nil {
 		t.Fatal(err)
 	}
 	stored, _, err = r.Get(ctx, user, ss.GoalSignature)

@@ -173,7 +173,10 @@ func (r *ProjectRecommendationRepository) SaveResearch(ctx context.Context, job 
 	result, err := r.database.ExecContext(ctx, `UPDATE project_recommendation_jobs SET research=$3,phase='compare',updated_at=NOW() WHERE id=$1 AND status='running' AND lease_token=$2`, job.ID, job.LeaseToken, raw)
 	return leaseResult(result, err)
 }
-func (r *ProjectRecommendationRepository) Complete(ctx context.Context, job projectrecs.Job, report projectrecs.Report) error {
+func (r *ProjectRecommendationRepository) Complete(ctx context.Context, job projectrecs.Job, report projectrecs.Report, validate func(context.Context) error) error {
+	if validate == nil {
+		return errors.New("recommendation input validator is required")
+	}
 	raw, err := json.Marshal(report)
 	if err != nil {
 		return err
@@ -192,6 +195,13 @@ func (r *ProjectRecommendationRepository) Complete(ctx context.Context, job proj
 		return projectrecs.ErrLeaseLost
 	}
 	if err != nil {
+		return err
+	}
+	// Every source read in the final validation must join this transaction.
+	// Account writers use the same lock, which lasts until report publication
+	// and task completion commit together. Model/search calls stay outside.
+	commitCtx := context.WithValue(ctx, transactionKey{}, transactionBinding{pool: r.database.pool, tx: tx.Tx})
+	if err := validate(commitCtx); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO project_recommendation_reports(user_id,goal_signature,report_id,target_id,source_hash,report,selected_project_id)

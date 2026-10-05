@@ -162,7 +162,9 @@ type Repository interface {
 	SaveDrafts(context.Context, Job, []Draft) error
 	SaveResearchProgress(context.Context, Job, []Research) error
 	SaveResearch(context.Context, Job, []Research) error
-	Complete(context.Context, Job, Report) error
+	// Complete must validate current inputs after acquiring the account lock,
+	// using the same transaction that publishes the report.
+	Complete(context.Context, Job, Report, func(context.Context) error) error
 	Fail(context.Context, Job, string, bool) error
 }
 type TargetReader interface {
@@ -279,6 +281,18 @@ func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, err
 	hash := sha256.Sum256(raw)
 	return Snapshot{TargetID: t.ID, GoalSignature: knowledgegaps.GoalSignature(t), SourceHash: hex.EncodeToString(hash[:]), Input: input, Readiness: r}, nil
 }
+
+func (s *Service) validateJobInputs(ctx context.Context, job Job) error {
+	ss, err := s.Snapshot(ctx, job.UserID)
+	if err != nil {
+		return err
+	}
+	if ss.TargetID != job.TargetID || ss.GoalSignature != job.GoalSignature || ss.SourceHash != job.SourceHash || ss.Readiness.Code != "ready" {
+		return ErrInputsChanged
+	}
+	return nil
+}
+
 func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
 	ss, err := s.Snapshot(ctx, userID)
 	if err != nil {

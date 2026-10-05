@@ -80,6 +80,15 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	if leaseErr != nil {
 		err = leaseErr
 	}
+	if err == nil {
+		err = w.repo.Complete(ctx, job, report, func(commitCtx context.Context) error {
+			return w.service.validateJobInputs(commitCtx, job)
+		})
+	}
+	if errors.Is(err, ErrLeaseLost) {
+		slog.Warn("discard recommendation after lease loss", "job_id", job.ID)
+		return true, nil
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 			return true, err
@@ -91,11 +100,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		}
 		return true, nil
 	}
-	if err = w.repo.Complete(ctx, job, report); errors.Is(err, ErrLeaseLost) {
-		slog.Warn("discard recommendation after lease loss", "job_id", job.ID)
-		return true, nil
-	}
-	return true, err
+	return true, nil
 }
 func (w *Worker) pipeline(ctx context.Context, job Job, creds modelconfig.Credentials) (Report, error) {
 	report := Report{ID: uuid.New(), TargetTitle: job.Input.Goal, Projects: []Project{}, GeneratedAt: time.Now().UTC(), PromptVersion: PromptVersion}
@@ -211,14 +216,9 @@ func (w *Worker) pipeline(ctx context.Context, job Job, creds modelconfig.Creden
 	return w.ensureCurrent(ctx, job, report)
 }
 func (w *Worker) ensureCurrent(ctx context.Context, job Job, report Report) (Report, error) {
-	ss, err := w.service.Snapshot(ctx, job.UserID)
-	if err != nil {
-		return report, err
-	}
-	if ss.GoalSignature != job.GoalSignature || ss.SourceHash != job.SourceHash || ss.Readiness.Code != "ready" {
-		return report, ErrInputsChanged
-	}
-	return report, nil
+	// This is an early check only. Complete repeats it while holding the account
+	// lock; a passing check here is never permission to publish by itself.
+	return report, w.service.validateJobInputs(ctx, job)
 }
 func failure(err error) (string, bool) {
 	if errors.Is(err, ErrInputsChanged) {

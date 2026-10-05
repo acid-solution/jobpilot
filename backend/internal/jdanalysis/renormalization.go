@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
 
@@ -39,42 +40,29 @@ func NewNormalizationWorker(repo NormalizationRepository, credentials Credential
 	return &NormalizationWorker{repo: repo, credentials: credentials, normalizer: normalizer}
 }
 
-func (w *NormalizationWorker) Run(ctx context.Context) {
-	if err := w.repo.RecoverNormalization(ctx); err != nil {
-		slog.Error("recover JD normalization", "error", err)
-	}
-	claim := time.NewTicker(3 * time.Second)
-	recovery := time.NewTicker(time.Minute)
-	defer claim.Stop()
-	defer recovery.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-recovery.C:
-			if err := w.repo.RecoverNormalization(ctx); err != nil {
-				slog.Error("recover JD normalization", "error", err)
-			}
-		case <-claim.C:
+func (w *NormalizationWorker) Run(ctx context.Context, concurrency int) {
+	workerpool.Run(ctx, workerpool.Options{
+		Name: "jd_normalization", Concurrency: concurrency, PollInterval: 3 * time.Second,
+		RecoveryInterval: time.Minute, Recover: w.repo.RecoverNormalization,
+		Process: func(ctx context.Context) (bool, error) {
 			ready, err := w.repo.EmbeddingsReady(ctx)
 			if err != nil {
-				slog.Error("check JD normalization vectors", "error", err)
-				continue
+				return false, err
 			}
 			if !ready {
-				continue
+				return false, nil
 			}
 			job, err := w.repo.ClaimNormalization(ctx)
 			if errors.Is(err, ErrNoNormalizationJob) {
-				continue
+				return false, nil
 			}
 			if err != nil {
-				slog.Error("claim JD normalization", "error", err)
-				continue
+				return false, err
 			}
 			w.runOne(ctx, job)
-		}
-	}
+			return true, nil
+		},
+	})
 }
 
 func (w *NormalizationWorker) runOne(ctx context.Context, job NormalizationJob) {

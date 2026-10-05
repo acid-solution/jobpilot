@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
 
@@ -289,25 +290,12 @@ func NewWorker(repository Repository, credentials CredentialProvider, analyzer A
 	return worker
 }
 
-func (w *Worker) Run(ctx context.Context) {
-	w.recoverExpired(ctx)
-	go w.runRecoveryLoop(ctx)
-	ticker := time.NewTicker(w.pollEvery)
-	defer ticker.Stop()
-	for {
-		worked, err := w.ProcessOnce(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("process JD analysis job", "error", err)
-		}
-		if worked {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+func (w *Worker) Run(ctx context.Context, concurrency int) {
+	workerpool.Run(ctx, workerpool.Options{
+		Name: "jd_analysis", Concurrency: concurrency, PollInterval: w.pollEvery,
+		RecoveryInterval: w.recoveryEvery, Process: w.ProcessOnce,
+		Recover: w.recoverExpired,
+	})
 }
 
 func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
@@ -466,30 +454,15 @@ func (w *Worker) maintainLease(ctx context.Context, cancelTask context.CancelFun
 	}
 }
 
-func (w *Worker) runRecoveryLoop(ctx context.Context) {
-	ticker := time.NewTicker(w.recoveryEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			w.recoverExpired(ctx)
-		}
-	}
-}
-
-func (w *Worker) recoverExpired(ctx context.Context) {
+func (w *Worker) recoverExpired(ctx context.Context) error {
 	count, err := w.repository.RecoverExpired(ctx)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			slog.Error("recover expired JD analysis jobs", "error", err)
-		}
-		return
+		return err
 	}
 	if count > 0 {
 		slog.Warn("recovered expired JD analysis jobs", "count", count)
 	}
+	return nil
 }
 
 func classify(err error) (string, bool) {

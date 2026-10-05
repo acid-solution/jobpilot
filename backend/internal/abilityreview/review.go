@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
 
@@ -107,7 +108,7 @@ func NewWorker(repository Repository, reviewer Reviewer, enabled bool, apiKey, m
 		pollEvery: pollEvery, lease: 5 * time.Minute, heartbeat: 30 * time.Second}
 }
 
-func (w *Worker) Run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context, concurrency int) {
 	if !w.enabled {
 		slog.Info("ability review worker disabled")
 		return
@@ -117,34 +118,25 @@ func (w *Worker) Run(ctx context.Context) {
 		slog.Warn("ability review worker blocked: platform key is not configured")
 		return
 	}
-	_ = w.repository.SetConfigurationBlocked(ctx, false)
-	go w.recoveryLoop(ctx)
-	ticker := time.NewTicker(w.pollEvery)
-	defer ticker.Stop()
-	for {
-		if err := w.runOne(ctx); err != nil && !errors.Is(err, ErrNoRequest) && !errors.Is(err, context.Canceled) {
-			slog.Error("ability review failed", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (w *Worker) recoveryLoop(ctx context.Context) {
-	_, _ = w.repository.RecoverExpired(ctx)
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_, _ = w.repository.RecoverExpired(ctx)
-		}
-	}
+	workerpool.Run(ctx, workerpool.Options{
+		Name: "ability_review", Concurrency: concurrency, PollInterval: w.pollEvery,
+		RecoveryInterval: time.Minute,
+		Recover: func(ctx context.Context) error {
+			// Retry startup unblocking after a transient database failure.
+			if err := w.repository.SetConfigurationBlocked(ctx, false); err != nil {
+				return err
+			}
+			_, err := w.repository.RecoverExpired(ctx)
+			return err
+		},
+		Process: func(ctx context.Context) (bool, error) {
+			err := w.runOne(ctx)
+			if errors.Is(err, ErrNoRequest) || errors.Is(err, ErrQuota) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	})
 }
 
 func (w *Worker) runOne(ctx context.Context) error {
@@ -162,17 +154,22 @@ func (w *Worker) runOne(ctx context.Context) error {
 
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	lost := make(chan struct{}, 1)
+	heartbeatDone := make(chan error, 1)
 	go func() {
 		ticker := time.NewTicker(w.heartbeat)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-callCtx.Done():
+				heartbeatDone <- nil
 				return
 			case <-ticker.C:
 				if err := w.repository.Heartbeat(callCtx, request, w.lease); err != nil {
-					lost <- struct{}{}
+					if callCtx.Err() != nil && !errors.Is(err, ErrLeaseLost) {
+						heartbeatDone <- nil
+						return
+					}
+					heartbeatDone <- err
 					cancel()
 					return
 				}
@@ -180,10 +177,16 @@ func (w *Worker) runOne(ctx context.Context) error {
 		}
 	}()
 	result, reviewErr := w.reviewer.ReviewAbility(callCtx, w.apiKey, w.model, request)
-	select {
-	case <-lost:
-		return ErrLeaseLost
-	default:
+	cancel()
+	heartbeatErr := <-heartbeatDone
+	if errors.Is(heartbeatErr, ErrLeaseLost) {
+		return heartbeatErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if heartbeatErr != nil {
+		reviewErr = heartbeatErr
 	}
 	if reviewErr != nil {
 		return w.repository.Fail(ctx, request, usageID, errorCode(reviewErr), request.Attempts < request.MaxAttempts)

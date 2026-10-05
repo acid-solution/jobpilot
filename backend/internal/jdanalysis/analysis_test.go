@@ -178,7 +178,7 @@ func TestWorkerScansForExpiredJobsAfterStartup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	worker.Run(ctx)
+	worker.Run(ctx, 2)
 
 	if calls := repository.recoveryCalls.Load(); calls < 2 {
 		t.Fatalf("expected startup and periodic recovery, got %d calls", calls)

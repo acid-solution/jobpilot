@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
 
@@ -34,40 +35,29 @@ type ReassessmentWorker struct {
 func NewReassessmentWorker(repo ReassessmentRepository, assessor Assessor) *ReassessmentWorker {
 	return &ReassessmentWorker{repo: repo, assessor: assessor}
 }
-func (w *ReassessmentWorker) Run(ctx context.Context) {
-	_ = w.repo.RecoverReassessment(ctx)
-	claim := time.NewTicker(3 * time.Second)
-	defer claim.Stop()
-	recovery := time.NewTicker(time.Minute)
-	defer recovery.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-recovery.C:
-			if err := w.repo.RecoverReassessment(ctx); err != nil {
-				slog.Error("recover material reassessment", "error", err)
-			}
-		case <-claim.C:
+func (w *ReassessmentWorker) Run(ctx context.Context, concurrency int) {
+	workerpool.Run(ctx, workerpool.Options{
+		Name: "material_reassessment", Concurrency: concurrency, PollInterval: 3 * time.Second,
+		RecoveryInterval: time.Minute, Recover: w.repo.RecoverReassessment,
+		Process: func(ctx context.Context) (bool, error) {
 			ready, err := w.repo.EmbeddingsReady(ctx)
 			if err != nil {
-				slog.Error("check ability embeddings", "error", err)
-				continue
+				return false, err
 			}
 			if !ready {
-				continue
+				return false, nil
 			}
 			job, err := w.repo.ClaimReassessment(ctx)
 			if errors.Is(err, ErrNoReassessmentJob) {
-				continue
+				return false, nil
 			}
 			if err != nil {
-				slog.Error("claim material reassessment", "error", err)
-				continue
+				return false, err
 			}
 			w.runOne(ctx, job)
-		}
-	}
+			return true, nil
+		},
+	})
 }
 func (w *ReassessmentWorker) runOne(ctx context.Context, job ReassessmentJob) {
 	taskCtx, cancel := context.WithCancel(ctx)

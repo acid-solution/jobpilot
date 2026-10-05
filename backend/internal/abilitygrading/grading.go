@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
 
@@ -104,7 +105,7 @@ func NewWorker(repository Repository, grader Grader, enabled bool, apiKey, model
 	}
 }
 
-func (w *Worker) Run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context, concurrency int) {
 	if !w.enabled {
 		slog.Info("JD ability grading worker disabled")
 		return
@@ -114,34 +115,24 @@ func (w *Worker) Run(ctx context.Context) {
 		slog.Warn("JD ability grading worker blocked: platform key is not configured")
 		return
 	}
-	_ = w.repository.SetConfigurationBlocked(ctx, false)
-	go w.recoveryLoop(ctx)
-	ticker := time.NewTicker(w.pollEvery)
-	defer ticker.Stop()
-	for {
-		if err := w.runOne(ctx); err != nil && !errors.Is(err, ErrNoJob) && !errors.Is(err, context.Canceled) {
-			slog.Error("JD ability grading failed", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (w *Worker) recoveryLoop(ctx context.Context) {
-	_, _ = w.repository.RecoverExpired(ctx)
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_, _ = w.repository.RecoverExpired(ctx)
-		}
-	}
+	workerpool.Run(ctx, workerpool.Options{
+		Name: "ability_grading", Concurrency: concurrency, PollInterval: w.pollEvery,
+		RecoveryInterval: time.Minute,
+		Recover: func(ctx context.Context) error {
+			if err := w.repository.SetConfigurationBlocked(ctx, false); err != nil {
+				return err
+			}
+			_, err := w.repository.RecoverExpired(ctx)
+			return err
+		},
+		Process: func(ctx context.Context) (bool, error) {
+			err := w.runOne(ctx)
+			if errors.Is(err, ErrNoJob) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	})
 }
 
 func (w *Worker) runOne(ctx context.Context) error {
@@ -151,20 +142,22 @@ func (w *Worker) runOne(ctx context.Context) error {
 	}
 	callContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	lost := make(chan struct{}, 1)
+	heartbeatDone := make(chan error, 1)
 	go func() {
 		ticker := time.NewTicker(w.heartbeat)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-callContext.Done():
+				heartbeatDone <- nil
 				return
 			case <-ticker.C:
 				if err := w.repository.Heartbeat(callContext, job, w.lease); err != nil {
-					select {
-					case lost <- struct{}{}:
-					default:
+					if callContext.Err() != nil && !errors.Is(err, ErrLeaseLost) {
+						heartbeatDone <- nil
+						return
 					}
+					heartbeatDone <- err
 					cancel()
 					return
 				}
@@ -172,10 +165,16 @@ func (w *Worker) runOne(ctx context.Context) error {
 		}
 	}()
 	result, gradeErr := w.grader.GradeJDAbilities(callContext, w.apiKey, w.model, job)
-	select {
-	case <-lost:
-		return ErrLeaseLost
-	default:
+	cancel()
+	heartbeatErr := <-heartbeatDone
+	if errors.Is(heartbeatErr, ErrLeaseLost) {
+		return heartbeatErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if heartbeatErr != nil {
+		gradeErr = heartbeatErr
 	}
 	if gradeErr != nil {
 		return w.repository.Fail(ctx, job, gradeErr.Error(), job.Attempts < job.MaxAttempts)

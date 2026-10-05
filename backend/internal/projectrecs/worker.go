@@ -8,6 +8,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
 
@@ -30,40 +31,11 @@ type Worker struct {
 func NewWorker(repo Repository, service *Service, credentials CredentialReader, model Generator, search Searcher, poll time.Duration) *Worker {
 	return &Worker{repo, service, credentials, model, search, poll, 5 * time.Minute, 30 * time.Second}
 }
-func (w *Worker) Run(ctx context.Context) {
-	if err := w.repo.RecoverExpired(ctx); err != nil {
-		slog.Error("recover recommendation jobs", "error", err)
-	}
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := w.repo.RecoverExpired(ctx); err != nil {
-					slog.Error("recover recommendation jobs", "error", err)
-				}
-			}
-		}
-	}()
-	ticker := time.NewTicker(w.poll)
-	defer ticker.Stop()
-	for {
-		worked, err := w.ProcessOnce(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("process recommendation job", "error", err)
-		}
-		if worked {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+func (w *Worker) Run(ctx context.Context, concurrency int) {
+	workerpool.Run(ctx, workerpool.Options{
+		Name: "project_recommendation", Concurrency: concurrency, PollInterval: w.poll,
+		RecoveryInterval: time.Minute, Process: w.ProcessOnce, Recover: w.repo.RecoverExpired,
+	})
 }
 func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	job, err := w.repo.Claim(ctx, w.lease)

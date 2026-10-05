@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -126,22 +127,37 @@ func run() error {
 	gradingWorker := abilitygrading.NewWorker(gradingRepository, deepSeekClient, configuration.JDAbilityGradingEnabled,
 		configuration.PlatformDeepSeekAPIKey, configuration.PlatformReviewModel, 2*time.Second)
 	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
-	defer cancelRuntime()
-	go analysisWorker.Run(runtimeContext)
-	go reviewWorker.Run(runtimeContext)
-	go gradingWorker.Run(runtimeContext)
-	go projectWorker.Run(runtimeContext)
+	var runtimeWorkers sync.WaitGroup
+	defer func() {
+		cancelRuntime()
+		// Workers join their consumers, recovery loops and per-task heartbeats
+		// before storage is closed. Network and database calls use runtimeContext.
+		runtimeWorkers.Wait()
+	}()
+	startWorker := func(run func(context.Context, int)) {
+		runtimeWorkers.Add(1)
+		go func() {
+			defer runtimeWorkers.Done()
+			run(runtimeContext, configuration.WorkerCount)
+		}()
+	}
+	startWorker(analysisWorker.Run)
+	startWorker(reviewWorker.Run)
+	startWorker(gradingWorker.Run)
+	startWorker(projectWorker.Run)
 	if configuration.EmbeddingEnabled {
-		go embedding.NewWorker(embeddingRepository, embeddingClient).Run(runtimeContext)
+		startWorker(embedding.NewWorker(embeddingRepository, embeddingClient).Run)
 		if embeddingClient.Configured() {
-			go profile.NewReassessmentWorker(postgres.NewMaterialReassessmentRepository(database, profileRepository, embeddingRepository), profileAssessor).Run(runtimeContext)
-			go jdanalysis.NewNormalizationWorker(postgres.NewJDNormalizationRepository(database, analysisRepository, embeddingRepository), modelConfigService, vectorNormalizer).Run(runtimeContext)
+			startWorker(profile.NewReassessmentWorker(postgres.NewMaterialReassessmentRepository(database, profileRepository, embeddingRepository), profileAssessor).Run)
+			startWorker(jdanalysis.NewNormalizationWorker(postgres.NewJDNormalizationRepository(database, analysisRepository, embeddingRepository), modelConfigService, vectorNormalizer).Run)
 		}
 	}
 	var agentService httpapi.AgentService
 	if configuration.AgentEnabled {
 		agentRepository := postgres.NewAgentRepository(database)
+		runtimeWorkers.Add(1)
 		go func() {
+			defer runtimeWorkers.Done()
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			for {

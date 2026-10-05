@@ -3,12 +3,15 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
 	"github.com/google/uuid"
 )
 
@@ -16,6 +19,84 @@ type KnowledgeGapsRepository struct{ database *repositoryDatabase }
 
 func NewKnowledgeGapsRepository(database *sql.DB) *KnowledgeGapsRepository {
 	return &KnowledgeGapsRepository{newRepositoryDatabase(database)}
+}
+
+func (r *KnowledgeGapsRepository) WithinUserSnapshot(ctx context.Context, userID uuid.UUID, run func(context.Context) error) error {
+	if binding, ok := ctx.Value(transactionKey{}).(transactionBinding); ok && binding.pool == r.database.pool {
+		// A failed automatic refresh must not abort the surrounding Agent action.
+		savepoint, err := r.database.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer savepoint.Rollback()
+		if err := run(ctx); err != nil {
+			return err
+		}
+		return savepoint.Commit()
+	}
+	options := &sql.TxOptions{Isolation: sql.LevelRepeatableRead}
+	var tx *sql.Tx
+	var err error
+	if mutationlock.HeldBy(ctx, userID) {
+		// The page mutation middleware holds the same lock on another connection.
+		tx, err = r.database.pool.BeginTx(ctx, options)
+	} else {
+		// Acquire the lock BEFORE beginning the repeatable-read transaction. A
+		// SELECT pg_try_advisory_xact_lock inside that transaction would establish
+		// its MVCC snapshot before lock acquisition, possibly missing the report
+		// just published by the previous holder.
+		conn, release, lockErr := lockGapSnapshotConnection(ctx, r.database.pool, userID)
+		if lockErr != nil {
+			return lockErr
+		}
+		defer release()
+		tx, err = conn.BeginTx(ctx, options)
+	}
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	snapshotCtx := context.WithValue(ctx, transactionKey{}, transactionBinding{pool: r.database.pool, tx: tx})
+	if err := run(snapshotCtx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func lockGapSnapshotConnection(ctx context.Context, pool *sql.DB, userID uuid.UUID) (*sql.Conn, func(), error) {
+	key := mutationlock.Key(userID)
+	for {
+		conn, err := pool.Conn(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		release := func() {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if _, err := conn.ExecContext(cleanupCtx, `SELECT pg_advisory_unlock($1)`, key); err != nil {
+				// Never return a possibly locked session to the pool.
+				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			}
+			_ = conn.Close()
+		}
+		var acquired bool
+		err = conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&acquired)
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		if acquired {
+			return conn, release, nil
+		}
+		_ = conn.Close()
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (r *KnowledgeGapsRepository) LoadRequirements(ctx context.Context, userID, targetID uuid.UUID) ([]knowledgegaps.Requirement, error) {

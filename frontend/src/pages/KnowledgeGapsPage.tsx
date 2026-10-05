@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, BookOpenCheck, CheckCircle2, ChevronRight, ClipboardCheck, GraduationCap, LockKeyhole, MessageSquareText, Play, RefreshCw, Send, UserRound, X } from 'lucide-react'
 import { jobPilotAPI, type KnowledgeGapItem, type KnowledgeGapView, type ProfileCapability, type ProfilePracticeSession } from '../api'
 
@@ -27,12 +27,35 @@ export function KnowledgeGapsPage({ onOpenMarket, onOpenProfile, onOpenSettings 
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [modelConfigured, setModelConfigured] = useState<boolean | null>(null)
+  const mounted = useRef(false)
+  const reloadSequence = useRef(0)
+  const busyRef = useRef(false)
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
+    const sequence = ++reloadSequence.current
     const [gaps, profile, history] = await Promise.all([jobPilotAPI.getKnowledgeGaps(), jobPilotAPI.getUserProfile(), jobPilotAPI.listProfileSessions()])
+    if (!mounted.current || sequence !== reloadSequence.current) return
     setView(gaps); setAbilities(profile.profile.capabilities ?? []); setSessions(history.sessions ?? [])
-  }
-  useEffect(() => { let active = true; setLoading(true); reload().catch((e) => { if (active) setError(message(e)) }).finally(() => { if (active) setLoading(false) }); return () => { active = false } }, [])
+    setSelected((previous) => previous ? [...(gaps.report?.gaps ?? []), ...(gaps.report?.met ?? []), ...(gaps.report?.preferred ?? [])].find((item) => item.id === previous.id) ?? null : null)
+  }, [])
+  useEffect(() => { mounted.current = true; setLoading(true); reload().catch((e) => { if (mounted.current) setError(message(e)) }).finally(() => { if (mounted.current) setLoading(false) }); return () => { mounted.current = false; reloadSequence.current++ } }, [reload])
+  useEffect(() => { busyRef.current = busy }, [busy])
+  useEffect(() => {
+    let active = true
+    let refreshing = false
+    const refresh = async () => {
+      if (!active || refreshing || busyRef.current || document.visibilityState === 'hidden') return
+      refreshing = true
+      try { await reload() }
+      catch (e) { if (active) setError(message(e)) }
+      finally { refreshing = false }
+    }
+    const timer = window.setInterval(() => { void refresh() }, 15000)
+    const onFocus = () => { void refresh() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus) }
+  }, [reload])
   useEffect(() => { jobPilotAPI.getDeepSeekConfig().then((config) => setModelConfigured(config.configured)).catch(() => {}) }, [])
 
   const report = view?.report
@@ -92,9 +115,9 @@ export function KnowledgeGapsPage({ onOpenMarket, onOpenProfile, onOpenSettings 
     {loading && <section className="gap-result-empty"><p>正在读取画像与报告……</p></section>}
 
     {!loading && section === 'overview' && <>
-      {view?.readiness.code !== 'ready' && <section className="result-readiness"><div className="readiness-summary"><span className="readiness-lock"><LockKeyhole size={20} /></span><div><span className="eyebrow">分析条件</span><h2>{view?.readiness.message || '画像尚未准备完成'}</h2><p>旧报告仍可查看；准备完成后由你重新分析。</p></div></div><div className="readiness-requirements"><article><div className="requirement-heading"><BookOpenCheck size={17} /><div><strong>市场画像</strong><span>至少 10 份计入的 JD，完成审核与判级</span></div><b>{view?.readiness.included_jd_count ?? 0} / 10</b></div><p>待审核 {view?.readiness.pending_review_count ?? 0} 项，审核失败 {view?.readiness.failed_review_count ?? 0} 项；待判级 {view?.readiness.pending_grading_count ?? 0} 项，判级失败 {view?.readiness.failed_grading_count ?? 0} 项。</p><button className="button" type="button" onClick={onOpenMarket}>查看市场画像 <ArrowRight size={14} /></button></article><article><div className="requirement-heading"><UserRound size={17} /><div><strong>用户画像</strong><span>确认必要信息与能力等级</span></div><b>{view?.readiness.missing_ability_count ?? 0} 项待判断</b></div><p>任选或多选要求只需评估到足以判断整条要求，不会把所有候选都当作必备。</p><button className="button" type="button" onClick={onOpenProfile}>补齐画像 <ArrowRight size={14} /></button></article></div></section>}
+      {view?.readiness.code !== 'ready' && <section className="result-readiness"><div className="readiness-summary"><span className="readiness-lock"><LockKeyhole size={20} /></span><div><span className="eyebrow">分析条件</span><h2>{view?.readiness.message || '画像尚未准备完成'}</h2><p>旧报告仍可查看；准备完成后已有报告会自动更新。</p></div></div><div className="readiness-requirements"><article><div className="requirement-heading"><BookOpenCheck size={17} /><div><strong>市场画像</strong><span>至少 10 份计入的 JD，完成审核与判级</span></div><b>{view?.readiness.included_jd_count ?? 0} / 10</b></div><p>待审核 {view?.readiness.pending_review_count ?? 0} 项，审核失败 {view?.readiness.failed_review_count ?? 0} 项；待判级 {view?.readiness.pending_grading_count ?? 0} 项，判级失败 {view?.readiness.failed_grading_count ?? 0} 项。</p><button className="button" type="button" onClick={onOpenMarket}>查看市场画像 <ArrowRight size={14} /></button></article><article><div className="requirement-heading"><UserRound size={17} /><div><strong>用户画像</strong><span>确认必要信息与能力等级</span></div><b>{view?.readiness.missing_ability_count ?? 0} 项待判断</b></div><p>任选或多选要求只需评估到足以判断整条要求，不会把所有候选都当作必备。</p><button className="button" type="button" onClick={onOpenProfile}>补齐画像 <ArrowRight size={14} /></button></article></div></section>}
       {!report ? <section className="gap-result-empty"><div className="project-result-head"><div><h2>短板结果</h2><p>完成两类画像后点击“分析短板”，结果只比较完整能力项。</p></div><span>尚未分析</span></div></section> : <>
-        {view?.stale && <div className="market-notice" role="status"><RefreshCw size={17} /><span>画像资料已有变化，下面保留上次报告。准备完成后请重新分析。</span></div>}
+        {view?.stale && <div className="market-notice" role="status"><RefreshCw size={17} /><span>{view.refresh_error || '画像资料已有变化，下面保留上次报告。画像、审核和判级准备完成后会自动更新。'}</span></div>}
         <section className="gap-summary-panel"><div className="gap-summary-copy"><span className="eyebrow">{view?.stale ? '上次结果 · 待更新' : '当前结果'}</span><h2>{report.gaps.length} 项要求需要补强</h2><p>仅判断完整能力和整条组合要求，不推测 MySQL 等能力内部的薄弱知识点。</p></div><div className="gap-summary-counts"><div className="is-gap"><strong>{report.gaps.length}</strong><span>需要补强</span></div><div><strong>{report.met.length}</strong><span>已经达到</span></div><div><strong>{report.preferred.length}</strong><span>加分准备</span></div></div></section>
         <section className="gap-result-panel"><div className="gap-result-heading"><div><h2>需要补强</h2><p>点击查看用户等级、JD 原文及判级理由。</p></div><span>{report.gaps.length} 项</span></div><div className="gap-table-head" aria-hidden="true"><span>能力或要求</span><span>用户当前</span><span>目标等级</span><span>差距</span><span>判断依据</span><span /></div><div className="gap-list">{report.gaps.length === 0 ? <p className="gap-boundary-note">当前已评估的必需要求均已达到。</p> : report.gaps.map((item) => <button className="gap-row" type="button" key={item.id} onClick={() => setSelected(item)}><strong>{item.kind === 'ability' ? item.name : item.options?.map((o) => o.name).join(' / ') || item.name}</strong><span><b className="level-chip">{item.kind === 'ability' ? `L${item.current_level}` : `${item.satisfied_count ?? 0} 项`}</b></span><span><b className="target-level">{item.kind === 'ability' ? `L${item.target_level}` : `需 ${item.required_count} 项`}</b></span><span className="gap-distance">{item.kind === 'ability' ? `差 ${Math.max(0, (item.target_level ?? 0) - (item.current_level ?? 0))} 级` : '组合未满足'}</span><span className="gap-source">{item.sample_count} 份 JD</span><ChevronRight size={16} /></button>)}</div></section>
         {(report.met.length > 0 || report.preferred.length > 0) && <section className="gap-result-panel"><div className="gap-result-heading"><div><h2>已达标与加分准备</h2><p>加分要求单独列出，不混入必备短板。</p></div></div><div className="gap-list">{[...report.met, ...report.preferred].map((item) => <button className="gap-row" type="button" key={item.id} onClick={() => setSelected(item)}><strong>{item.kind === 'ability' ? item.name : item.options?.map((o) => o.name).join(' / ') || item.name}</strong><span>{report.preferred.some((p) => p.id === item.id) ? '加分项' : '已达标'}</span><span>{item.kind === 'ability' ? `L${item.current_level} / L${item.target_level}` : `${item.satisfied_count} / ${item.required_count}`}</span><span /><span>{item.sample_count} 份 JD</span><ChevronRight size={16} /></button>)}</div></section>}

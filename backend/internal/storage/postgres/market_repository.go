@@ -631,8 +631,14 @@ func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID
 		for _, evidence := range state.preferred {
 			preferred = append(preferred, evidence)
 		}
-		sort.Slice(required, func(i, j int) bool { return required[i].JobTitle < required[j].JobTitle })
-		sort.Slice(preferred, func(i, j int) bool { return preferred[i].JobTitle < preferred[j].JobTitle })
+		lessEvidence := func(a, b market.LevelEvidence) bool {
+			if a.JobTitle != b.JobTitle {
+				return a.JobTitle < b.JobTitle
+			}
+			return a.JobDescriptionID.String() < b.JobDescriptionID.String()
+		}
+		sort.Slice(required, func(i, j int) bool { return lessEvidence(required[i], required[j]) })
+		sort.Slice(preferred, func(i, j int) bool { return lessEvidence(preferred[i], preferred[j]) })
 		profile.Abilities[accumulator.index].LevelSummary = market.BuildLevelSummary(required, status)
 		profile.Abilities[accumulator.index].PreferredLevelSummary = market.BuildLevelSummary(preferred, status)
 		profile.Abilities[accumulator.index].TargetLevel = profile.Abilities[accumulator.index].LevelSummary.RecommendedLevel

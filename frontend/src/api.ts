@@ -259,6 +259,7 @@ export interface KnowledgeGapReport { target_id: string; gaps: KnowledgeGapItem[
 export interface KnowledgeGapView {
   report?: KnowledgeGapReport
   stale: boolean
+  refresh_error?: string
   readiness: { code: string; message: string; included_jd_count: number; pending_review_count: number; failed_review_count: number; pending_grading_count: number; failed_grading_count: number; missing_ability_count: number }
 }
 

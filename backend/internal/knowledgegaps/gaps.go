@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -93,12 +94,16 @@ type View struct {
 	Stale             bool      `json:"stale"`
 	Readiness         Readiness `json:"readiness"`
 	SourceFingerprint string    `json:"-"`
+	RefreshError      string    `json:"refresh_error,omitempty"`
 }
 type Stored struct {
 	Report     Report
 	SourceHash string
 }
 type Repository interface {
+	// Snapshot serializes report publication and reads the contributing sources
+	// consistently. It also joins an existing approved business transaction.
+	WithinUserSnapshot(context.Context, uuid.UUID, func(context.Context) error) error
 	LoadRequirements(context.Context, uuid.UUID, uuid.UUID) ([]Requirement, error)
 	Get(context.Context, uuid.UUID, string) (*Stored, error)
 	Save(context.Context, uuid.UUID, uuid.UUID, string, string, Report) error
@@ -216,19 +221,43 @@ func (s *Service) load(ctx context.Context, userID uuid.UUID) (snapshot, error) 
 	}
 	levels := make([]level, 0, len(p.Capabilities))
 	for _, a := range p.Capabilities {
-		levels = append(levels, level{a.AbilityID, a.CurrentLevel, a.Assessed, a.LevelSource, a.Evidence})
+		evidence := sortedSourceValues(a.Evidence, func(e profile.Evidence) string { return e.ID.String() })
+		levels = append(levels, level{a.AbilityID, a.CurrentLevel, a.Assessed, a.LevelSource, evidence})
 	}
 	sort.Slice(levels, func(i, j int) bool { return levels[i].ID.String() < levels[j].ID.String() })
+	// Database/map iteration order is not a source change. Canonicalize copies
+	// so repeated reads do not keep replacing an otherwise identical report.
+	marketAbilities := sortedSourceValues(m.Abilities, func(a market.AbilitySummary) string { return a.AbilityID.String() })
+	for i := range marketAbilities {
+		a := &marketAbilities[i]
+		a.Evidences = sortedSourceValues(a.Evidences, func(e market.AbilityEvidence) string {
+			return e.JobDescriptionID.String() + "\x00" + e.Evidence + "\x00" + e.Qualifier
+		})
+		for _, summary := range []*market.LevelSummary{&a.LevelSummary, &a.PreferredLevelSummary} {
+			summary.Evidences = sortedSourceValues(summary.Evidences, func(e market.LevelEvidence) string { return e.JobDescriptionID.String() })
+		}
+	}
+	requirements := sortedSourceValues(reqs, func(q Requirement) string { return q.ID.String() })
+	for i := range requirements {
+		requirements[i].Options = sortedSourceValues(requirements[i].Options, func(o Option) string { return o.ID.String() })
+	}
 	goalSignature := signature(t)
 	value, _ := json.Marshal(struct {
 		Target       uuid.UUID
 		Market       []market.AbilitySummary
 		Requirements []Requirement
 		Levels       []level
-	}{t.ID, m.Abilities, reqs, levels})
+	}{t.ID, marketAbilities, requirements, levels})
 	h := sha256.Sum256(value)
 	return snapshot{t, m, p, settings, reqs, r, hex.EncodeToString(h[:]), goalSignature}, nil
 }
+
+func sortedSourceValues[T any](values []T, key func(T) string) []T {
+	result := append([]T{}, values...)
+	sort.Slice(result, func(i, j int) bool { return key(result[i]) < key(result[j]) })
+	return result
+}
+
 func signature(t target.Target) string {
 	type direction struct {
 		Category  uuid.UUID
@@ -289,48 +318,71 @@ func groupDecidable(q Requirement, abilities map[uuid.UUID]profile.Capability) b
 	return len(satisfied) >= needed || !unknown
 }
 func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
-	ss, err := s.load(ctx, userID)
-	if err != nil {
-		if errors.Is(err, target.ErrNotFound) {
-			return View{Readiness: Readiness{Code: "target_missing", Message: "请先设置求职目标"}}, nil
+	var view, previous View
+	err := s.repo.WithinUserSnapshot(ctx, userID, func(snapshotCtx context.Context) error {
+		ss, err := s.load(snapshotCtx, userID)
+		if err != nil {
+			if errors.Is(err, target.ErrNotFound) {
+				view.Readiness = Readiness{Code: "target_missing", Message: "请先设置求职目标"}
+				return nil
+			}
+			return err
 		}
-		return View{}, err
+		stored, err := s.repo.Get(snapshotCtx, userID, ss.goalSignature)
+		if err != nil {
+			return err
+		}
+		view = View{Readiness: ss.readiness, SourceFingerprint: ss.hash}
+		if stored == nil {
+			return nil
+		}
+		view.Report = &stored.Report
+		view.Stale = stored.SourceHash != ss.hash || ss.readiness.Code != "ready"
+		if !view.Stale || ss.readiness.Code != "ready" {
+			return nil
+		}
+		previous = view
+		view, err = s.buildAndSave(snapshotCtx, userID, ss)
+		return err
+	})
+	if err != nil && previous.Report != nil && ctx.Err() == nil {
+		// Publication is transactional: a save or commit failure cannot replace
+		// the last good report. Never return an uncommitted report as current.
+		previous.RefreshError = "短板报告自动更新暂时失败，已保留上次结果，请重试"
+		slog.Warn("refresh knowledge gap report", "user_id", userID, "error", err)
+		return previous, nil
 	}
-	stored, err := s.repo.Get(ctx, userID, ss.goalSignature)
-	if err != nil {
-		return View{}, err
-	}
-	v := View{Readiness: ss.readiness, SourceFingerprint: ss.hash}
-	if stored != nil {
-		v.Report = &stored.Report
-		v.Stale = stored.SourceHash != ss.hash
-	}
-	return v, nil
+	return view, err
 }
+
 func (s *Service) Analyze(ctx context.Context, userID uuid.UUID) (View, error) {
-	ss, err := s.load(ctx, userID)
-	if err != nil {
-		if errors.Is(err, target.ErrNotFound) {
-			return View{Readiness: Readiness{Code: "target_missing", Message: "请先设置求职目标"}}, ErrNotReady
+	var view View
+	err := s.repo.WithinUserSnapshot(ctx, userID, func(snapshotCtx context.Context) error {
+		ss, err := s.load(snapshotCtx, userID)
+		if err != nil {
+			if errors.Is(err, target.ErrNotFound) {
+				view.Readiness = Readiness{Code: "target_missing", Message: "请先设置求职目标"}
+				return ErrNotReady
+			}
+			return err
 		}
-		return View{}, err
-	}
-	if ss.readiness.Code != "ready" {
-		return View{Readiness: ss.readiness}, ErrNotReady
-	}
+		if ss.readiness.Code != "ready" {
+			view.Readiness = ss.readiness
+			return ErrNotReady
+		}
+		view, err = s.buildAndSave(snapshotCtx, userID, ss)
+		return err
+	})
+	return view, err
+}
+
+func (s *Service) buildAndSave(ctx context.Context, userID uuid.UUID, ss snapshot) (View, error) {
 	report := Build(ss.target.ID, ss.requirements, ss.market.Abilities, ss.profile.Capabilities)
 	report.GeneratedAt = time.Now().UTC()
-	currentTarget, err := s.targets.Current(ctx, userID)
-	if err != nil {
-		return View{}, err
-	}
-	if signature(currentTarget) != ss.goalSignature {
-		return View{Readiness: Readiness{Code: "target_changed", Message: "求职目标已经变化，请重新分析"}}, ErrNotReady
-	}
 	if err := s.repo.Save(ctx, userID, ss.target.ID, ss.goalSignature, ss.hash, report); err != nil {
 		return View{}, err
 	}
-	return View{Report: &report, Readiness: ss.readiness}, nil
+	return View{Report: &report, Readiness: ss.readiness, SourceFingerprint: ss.hash}, nil
 }
 
 func Build(targetID uuid.UUID, reqs []Requirement, marketAbilities []market.AbilitySummary, capabilities []profile.Capability) Report {

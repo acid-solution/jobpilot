@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
@@ -128,19 +130,109 @@ func TestKnowledgeGapReportTenJDsAndStalenessIntegration(t *testing.T) {
 	if _, err := profiles.SetCapabilityLevel(ctx, userID, goID, 3); err != nil {
 		t.Fatal(err)
 	}
-	stale, err := s.Get(ctx, userID)
+	updated, err := s.Get(ctx, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stale.Stale || stale.Report == nil || len(stale.Report.Gaps) != 1 {
-		t.Fatal("old report should remain visible and stale")
-	}
-	updated, err := s.Analyze(ctx, userID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(updated.Report.Gaps) != 0 || len(updated.Report.Met) != 2 {
+	if updated.Stale || updated.Report == nil || len(updated.Report.Gaps) != 0 || len(updated.Report.Met) != 2 {
 		t.Fatalf("manual correction did not update report: %+v", updated.Report)
+	}
+
+	// Update market grades through the same completion transaction used by the
+	// Worker, without running basic JD parsing or invoking a paid model.
+	if _, err := db.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET status='queued',attempts=0,next_attempt_at=NOW() WHERE user_id=$1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	grading := NewAbilityGradingRepository(db)
+	for range 10 {
+		input, err := grading.Claim(ctx, 5*time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := abilitygrading.Result{Provider: "test", Model: "test", PromptVersion: abilitygrading.PromptVersion}
+		for _, ability := range input.Abilities {
+			for _, evidence := range ability.Evidences {
+				level := 3
+				if evidence.Quote == "要求独立使用 Go 开发服务" {
+					level = 4
+				}
+				result.Assessments = append(result.Assessments, abilitygrading.Assessment{OptionID: evidence.OptionID, AbilityCode: ability.Code,
+					Level: level, Source: "explicit", RequirementKind: evidence.RequirementKind, EvidenceQuote: evidence.Quote, Reason: "对照等级标准重新判断", Confidence: .9})
+			}
+		}
+		if err := grading.Complete(ctx, input, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Concurrent reads must all observe the same published report, rather than
+	// overwrite it repeatedly from overlapping snapshots.
+	type readResult struct {
+		view knowledgegaps.View
+		err  error
+	}
+	reads := make(chan readResult, 4)
+	for range 4 {
+		go func() { view, err := s.Get(ctx, userID); reads <- readResult{view, err} }()
+	}
+	var generated time.Time
+	for range 4 {
+		value := <-reads
+		if value.err != nil || value.view.Stale || value.view.Report == nil || len(value.view.Report.Gaps) != 1 || value.view.Report.Gaps[0].TargetLevel != 4 {
+			t.Fatalf("market grade was not automatically refreshed: %+v %v", value.view, value.err)
+		}
+		if generated.IsZero() {
+			generated = value.view.Report.GeneratedAt
+		} else if !generated.Equal(value.view.Report.GeneratedAt) {
+			t.Fatalf("concurrent readers republished identical input: first=%s next=%s fingerprint=%s", generated, value.view.Report.GeneratedAt, value.view.SourceFingerprint)
+		}
+	}
+	// A material/reassessment update changes the persisted current level directly;
+	// refresh must not depend on the manual-level endpoint being called.
+	if _, err := db.ExecContext(ctx, `UPDATE user_capability_profiles SET current_level=4,level_source='material',updated_at=NOW() WHERE user_id=$1 AND ability_id=$2`, userID, goID); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = s.Get(ctx, userID)
+	if err != nil || updated.Stale || len(updated.Report.Gaps) != 0 || len(updated.Report.Met) != 2 {
+		t.Fatalf("material grade not refreshed: %+v %v", updated, err)
+	}
+	// Saving must be part of the transaction; a real database rejection leaves
+	// the previous report readable, even inside an Agent action transaction.
+	if _, err := db.ExecContext(ctx, `CREATE FUNCTION fail_gap_refresh_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		IF NEW.user_id='`+userID.String()+`'::uuid THEN RAISE EXCEPTION 'test report save failure'; END IF; RETURN NEW; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER fail_gap_refresh_test BEFORE UPDATE ON knowledge_gap_reports FOR EACH ROW EXECUTE FUNCTION fail_gap_refresh_test()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DROP TRIGGER IF EXISTS fail_gap_refresh_test ON knowledge_gap_reports`)
+		_, _ = db.Exec(`DROP FUNCTION IF EXISTS fail_gap_refresh_test()`)
+	})
+	if _, err := profiles.SetCapabilityLevel(ctx, userID, goID, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewAgentRepository(db).WithinUserTransaction(ctx, userID, func(txCtx context.Context) error {
+		preserved, err := s.Get(txCtx, userID)
+		if err != nil {
+			return err
+		}
+		if !preserved.Stale || preserved.RefreshError == "" || len(preserved.Report.Gaps) != 0 {
+			return errors.New("failed refresh did not return previous report")
+		}
+		var usable int
+		return NewKnowledgeGapsRepository(db).database.QueryRowContext(txCtx, `SELECT 1`).Scan(&usable)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER fail_gap_refresh_test ON knowledge_gap_reports`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP FUNCTION fail_gap_refresh_test()`); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = s.Get(ctx, userID)
+	if err != nil || updated.Stale || len(updated.Report.Gaps) != 1 {
+		t.Fatalf("retry did not recover: %+v %v", updated, err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE jd_ability_level_jobs SET status='failed',attempts=3 WHERE job_description_id=$1`, firstJDID); err != nil {
 		t.Fatal(err)
@@ -162,6 +254,10 @@ func TestKnowledgeGapReportTenJDsAndStalenessIntegration(t *testing.T) {
 	}
 	if retained != 3 {
 		t.Fatalf("grading retry should retain old grades until success: %d", retained)
+	}
+	waiting, err := s.Get(ctx, userID)
+	if err != nil || !waiting.Stale || waiting.Readiness.Code != "grading_pending" || !waiting.Report.GeneratedAt.Equal(updated.Report.GeneratedAt) {
+		t.Fatalf("incomplete grading did not preserve report: %+v %v", waiting, err)
 	}
 }
 func intPtr(v int) *int { return &v }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
 	"log/slog"
 	"net/http"
 	"os"
@@ -109,6 +110,19 @@ func run() error {
 	projectService := projectrecs.NewService(projectRepository, targetService, marketService, profileService, knowledgeGapsService, modelConfigService)
 	projectWorker := projectrecs.NewWorker(projectRepository, projectService, modelConfigService, deepSeekClient,
 		projectrecs.NewGitHubClient("https://api.github.com", configuration.GitHubToken, nil), 2*time.Second)
+	var learningService *learningroutes.Service
+	var learningAPI httpapi.LearningRoutesService
+	var learningWorker *learningroutes.Worker
+	if configuration.LearningRoutesEnabled {
+		remote, e := learningroutes.NewMCPClient(configuration.AuthExchangeURL, configuration.JobPilotExchangeSecret, configuration.StudyFlowMCPURL)
+		if e != nil {
+			return e
+		}
+		repo := postgres.NewLearningRouteRepository(database)
+		learningService = learningroutes.NewService(repo, projectService, knowledgeGapsService, profileService, modelConfigService, remote, configuration.StudyFlowWebURL)
+		learningWorker = learningroutes.NewWorker(repo, learningService, modelConfigService, deepSeekClient)
+		learningAPI = learningService
+	}
 	analysisRepository := postgres.NewAnalysisRepository(database)
 	analysisWorker := jdanalysis.NewWorker(analysisRepository, modelConfigService, deepSeekClient, 2*time.Second,
 		jdanalysis.ClassificationReviewConfig{
@@ -145,6 +159,9 @@ func run() error {
 	startWorker(reviewWorker.Run)
 	startWorker(gradingWorker.Run)
 	startWorker(projectWorker.Run)
+	if learningWorker != nil {
+		startWorker(learningWorker.Run)
+	}
 	if configuration.EmbeddingEnabled {
 		startWorker(embedding.NewWorker(embeddingRepository, embeddingClient).Run)
 		if embeddingClient.Configured() {
@@ -172,7 +189,8 @@ func run() error {
 			}
 		}()
 		agentService = &agent.Service{
-			Repo: agentRepository, Checkpoints: postgres.NewAgentCheckpointStore(database),
+			Learning: learningService,
+			Repo:     agentRepository, Checkpoints: postgres.NewAgentCheckpointStore(database),
 			MutationLocker: mutationLocker,
 			Transactions:   agentRepository,
 			Targets:        targetService, Market: marketService, Profile: profileService,
@@ -185,6 +203,7 @@ func run() error {
 	}
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
+		LearningRoutesService:         learningAPI,
 		AgentService:                  agentService,
 		MutationLocker:                mutationLocker,
 		IdentityResolver:              resolver,

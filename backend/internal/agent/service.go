@@ -12,6 +12,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/embedding"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
@@ -81,6 +82,7 @@ type SourceMatch struct {
 }
 
 type Service struct {
+	Learning         *learningroutes.Service
 	Repo             Repository
 	Checkpoints      CheckpointStore
 	MutationLocker   mutationlock.Locker

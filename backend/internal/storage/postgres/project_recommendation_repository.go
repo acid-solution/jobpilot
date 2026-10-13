@@ -22,13 +22,32 @@ func (r *ProjectRecommendationRepository) Get(ctx context.Context, userID uuid.U
 	var stored *projectrecs.Stored
 	var raw []byte
 	var hash string
+	var projectHash string
+	var selectedHash string
 	var selected sql.NullString
-	err := r.database.QueryRowContext(ctx, `SELECT source_hash,report,selected_project_id FROM project_recommendation_reports WHERE user_id=$1 AND goal_signature=$2`, userID, signature).Scan(&hash, &raw, &selected)
+	err := r.database.QueryRowContext(ctx, `SELECT source_hash,report,selected_project_id,project_context_hash,selected_context_hash FROM project_recommendation_reports WHERE user_id=$1 AND goal_signature=$2`, userID, signature).Scan(&hash, &raw, &selected, &projectHash, &selectedHash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, err
 	}
 	if err == nil {
-		stored = &projectrecs.Stored{SourceHash: hash, SelectedProjectID: selected.String}
+		// Backfill only from the actual successful generation input, never today's profile.
+		if projectHash == "" {
+			var original []byte
+			e := r.database.QueryRowContext(ctx, `SELECT input FROM project_recommendation_jobs WHERE user_id=$1 AND goal_signature=$2 AND source_hash=$3 AND status='succeeded' ORDER BY updated_at DESC LIMIT 1`, userID, signature, hash).Scan(&original)
+			if e == nil {
+				var input projectrecs.Input
+				if e = json.Unmarshal(original, &input); e != nil {
+					return nil, nil, e
+				}
+				projectHash = projectrecs.ProjectContextHash(input)
+				if _, e = r.database.ExecContext(ctx, `UPDATE project_recommendation_reports SET project_context_hash=$4 WHERE user_id=$1 AND goal_signature=$2 AND source_hash=$3 AND project_context_hash=''`, userID, signature, hash, projectHash); e != nil {
+					return nil, nil, e
+				}
+			} else if !errors.Is(e, sql.ErrNoRows) {
+				return nil, nil, e
+			}
+		}
+		stored = &projectrecs.Stored{SourceHash: hash, SelectedProjectID: selected.String, ProjectContextHash: projectHash, SelectedContextHash: selectedHash}
 		if err = json.Unmarshal(raw, &stored.Report); err != nil {
 			return nil, nil, err
 		}
@@ -68,6 +87,10 @@ func (r *ProjectRecommendationRepository) Enqueue(ctx context.Context, userID uu
 	return job, err
 }
 func (r *ProjectRecommendationRepository) Select(ctx context.Context, userID uuid.UUID, signature string, reportID uuid.UUID, projectID string) error {
+	return r.SelectWithContext(ctx, userID, signature, reportID, projectID, "")
+}
+
+func (r *ProjectRecommendationRepository) SelectWithContext(ctx context.Context, userID uuid.UUID, signature string, reportID uuid.UUID, projectID, basis string) error {
 	tx, err := r.database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -99,7 +122,7 @@ func (r *ProjectRecommendationRepository) Select(ctx context.Context, userID uui
 	if !found {
 		return projectrecs.ErrNotFound
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE project_recommendation_reports SET selected_project_id=$3 WHERE user_id=$1 AND goal_signature=$2`, userID, signature, projectID)
+	_, err = tx.ExecContext(ctx, `UPDATE project_recommendation_reports SET selected_project_id=$3,selected_context_hash=$4 WHERE user_id=$1 AND goal_signature=$2`, userID, signature, projectID, basis)
 	if err != nil {
 		return err
 	}
@@ -204,9 +227,9 @@ func (r *ProjectRecommendationRepository) Complete(ctx context.Context, job proj
 	if err := validate(commitCtx); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO project_recommendation_reports(user_id,goal_signature,report_id,target_id,source_hash,report,selected_project_id)
-		VALUES($1,$2,$3,$4,$5,$6,NULL) ON CONFLICT(user_id,goal_signature) DO UPDATE SET report_id=EXCLUDED.report_id,target_id=EXCLUDED.target_id,
-		source_hash=EXCLUDED.source_hash,report=EXCLUDED.report,selected_project_id=NULL,generated_at=NOW()`, job.UserID, job.GoalSignature, report.ID, job.TargetID, job.SourceHash, raw)
+	_, err = tx.ExecContext(ctx, `INSERT INTO project_recommendation_reports(user_id,goal_signature,report_id,target_id,source_hash,report,selected_project_id,project_context_hash)
+		VALUES($1,$2,$3,$4,$5,$6,NULL,$7) ON CONFLICT(user_id,goal_signature) DO UPDATE SET report_id=EXCLUDED.report_id,target_id=EXCLUDED.target_id,
+		source_hash=EXCLUDED.source_hash,report=EXCLUDED.report,selected_project_id=NULL,selected_context_hash='',project_context_hash=EXCLUDED.project_context_hash,generated_at=NOW()`, job.UserID, job.GoalSignature, report.ID, job.TargetID, job.SourceHash, raw, projectrecs.ProjectContextHash(job.Input))
 	if err != nil {
 		return err
 	}

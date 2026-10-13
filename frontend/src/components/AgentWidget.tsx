@@ -8,6 +8,13 @@ import { ArrowUp, Bot, History, Minus, ScanLine, Sparkles, SquarePen, Trash2 } f
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { agentAPI, type AgentActionRecord, type AgentConversationRecord, type AgentMessageRecord, type AgentStreamEvent } from '../api'
+import type { LearningRouteVersion } from '../learningRouteTypes'
+
+function ActionParameters({ action }: { action: AgentActionRecord }) {
+  if (action.kind !== 'route_import' || !action.arguments.preview) return <pre className="agent-action-arguments">{JSON.stringify(action.arguments, null, 2)}</pre>
+  const preview = action.arguments.preview as LearningRouteVersion
+  return <div className="agent-action-arguments"><p>求职目标：{String(action.arguments.goal_title ?? '')}</p><p>路线 V{preview.version_no} · 修订 {preview.revision}。导入草稿后需要主动激活。</p>{preview.plans.map(p => <section key={p.role}><strong>{p.title} · 每周 {preview.config[p.role].weekly_minutes} 分钟</strong>{p.stages.map((s, i) => <div key={i}><p>{s.title}：{s.outcome}</p><ul>{s.tasks.map(t => <li key={t.id}>{t.title} · {t.estimate_minutes} 分钟{t.scheduled_date ? ` · ${t.scheduled_date}` : ''}<p>{t.description}</p><p>完成标准：{t.completion_criteria}</p></li>)}</ul></div>)}</section>)}</div>
+}
 
 interface AgentWidgetProps {
   currentPage: string
@@ -342,7 +349,7 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
             <span>等待你的确认</span>
             <strong>{pendingAction.summary}</strong>
             <p>以下是本次要提交的完整参数。确认后只执行这一项操作。</p>
-            <pre className="agent-action-arguments">{JSON.stringify(pendingAction.arguments, null, 2)}</pre>
+            <ActionParameters action={pendingAction} />
             <div className="operation-actions">
               <button className="button button-primary" type="button" disabled={busy} onClick={() => void resolveAction(true)}>确认并执行</button>
               <button className="button" type="button" disabled={busy} onClick={() => void resolveAction(false)}>取消</button>

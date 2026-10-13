@@ -27,10 +27,10 @@ func (r *AgentRepository) RecoverRuns(ctx context.Context) error {
 		UPDATE agent_actions a SET status='failed',error_code='execution_interrupted_unknown',updated_at=NOW()
 		FROM agent_conversations c WHERE a.conversation_id=c.id AND a.status='executing'
 		  AND c.status='running' AND c.run_expires_at<NOW()
-		RETURNING a.conversation_id,a.summary
+			RETURNING a.conversation_id,a.summary,a.result
 	) INSERT INTO agent_messages(conversation_id,role,content)
 	  SELECT conversation_id,'assistant',
-	    '操作“'||summary||'”执行中断，结果尚不能确认。请先在相应页面核对实际资料，再决定是否重新发起。'
+		    '操作“'||summary||'”执行中断，结果尚不能确认。请先在相应页面核对实际资料，再决定是否重新发起。'||CASE WHEN result->>'import_request_id' IS NOT NULL THEN ' 学习路线导入请求编号：'||(result->>'import_request_id') ELSE '' END
 	  FROM interrupted`)
 	if err != nil {
 		return err
@@ -260,7 +260,9 @@ func (r *AgentRepository) SetInterrupt(ctx context.Context, conversation, action
 func (r *AgentRepository) GetAction(ctx context.Context, user uuid.UUID, scope string, id uuid.UUID) (agent.Action, error) {
 	var a agent.Action
 	var versions []byte
-	err := r.db.QueryRowContext(ctx, `SELECT id,kind,arguments,summary,status,interrupt_id,expected_hash,expected_versions FROM agent_actions WHERE id=$1 AND user_id=$2 AND goal_signature=$3`, id, user, scope).Scan(&a.ID, &a.Kind, &a.Arguments, &a.Summary, &a.Status, &a.InterruptID, &a.ExpectedHash, &versions)
+	var result []byte
+	err := r.db.QueryRowContext(ctx, `SELECT id,kind,arguments,summary,status,interrupt_id,expected_hash,expected_versions,result FROM agent_actions WHERE id=$1 AND user_id=$2 AND goal_signature=$3`, id, user, scope).Scan(&a.ID, &a.Kind, &a.Arguments, &a.Summary, &a.Status, &a.InterruptID, &a.ExpectedHash, &versions, &result)
+	a.Result = result
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, agent.ErrNotFound
 	}
@@ -276,6 +278,22 @@ func (r *AgentRepository) ClaimAction(ctx context.Context, id, conversation uuid
 	}
 	n, _ := result.RowsAffected()
 	return n == 1, nil
+}
+
+func (r *AgentRepository) BindExternalImport(ctx context.Context, id uuid.UUID, request uuid.UUID) error {
+	raw, _ := json.Marshal(map[string]any{"import_request_id": request})
+	result, err := r.db.ExecContext(ctx, `UPDATE agent_actions SET result=$2,updated_at=NOW() WHERE id=$1 AND status='executing'`, id, raw)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return agent.ErrActionClosed
+	}
+	return nil
 }
 func (r *AgentRepository) FinishAction(ctx context.Context, id uuid.UUID, status string, result json.RawMessage, errorCode string) error {
 	updated, err := r.db.ExecContext(ctx, `UPDATE agent_actions SET status=$2,result=$3,error_code=$4,updated_at=NOW() WHERE id=$1 AND status='executing'`, id, status, result, errorCode)

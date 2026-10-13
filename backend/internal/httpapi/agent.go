@@ -119,6 +119,7 @@ func sendAgentMessage(s AgentService) gin.HandlerFunc {
 		// A browser may disconnect after receiving a streamed tool event. Keep
 		// the bounded run alive so its persisted result is not left half-written.
 		runCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 4*time.Minute)
+		runCtx = agent.WithSourceAccess(runCtx, sourceAccess(c))
 		defer cancel()
 		userID := identity.UserID(c)
 		streamAgent(c, func(emit func(agent.Event)) error {
@@ -144,6 +145,7 @@ func resolveAgentAction(s AgentService) gin.HandlerFunc {
 			return
 		}
 		runCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 4*time.Minute)
+		runCtx = agent.WithSourceAccess(runCtx, sourceAccess(c))
 		defer cancel()
 		userID := identity.UserID(c)
 		streamAgent(c, func(emit func(agent.Event)) error {

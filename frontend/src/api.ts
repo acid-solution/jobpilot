@@ -1,3 +1,6 @@
+import type { LearningRouteConfig, LearningRouteVersion, LearningRouteView } from './learningRouteTypes'
+export type { LearningRouteConfig, LearningRouteVersion, LearningRouteView } from './learningRouteTypes'
+
 export interface TargetDirection {
   category_id: string
   category: string
@@ -299,6 +302,8 @@ export interface RecommendedProject {
   no_reference_reason?: string
 }
 export interface ProjectRecommendationsView {
+	selection_needs_review?: boolean
+	knowledge_preparation?: KnowledgeGapReport
   readiness: KnowledgeGapView['readiness']
   report?: { id: string; target_title: string; projects: RecommendedProject[]; empty_reason?: string; generated_at: string }
   selected_project_id?: string
@@ -582,6 +587,11 @@ export const jobPilotAPI = {
   getKnowledgeGaps: () => request<KnowledgeGapView>('/api/v1/knowledge-gaps'),
   analyzeKnowledgeGaps: () => request<KnowledgeGapView>('/api/v1/knowledge-gaps/analyze', { method: 'POST' }),
   getProjectRecommendations: () => request<ProjectRecommendationsView>('/api/v1/project-recommendations'),
+	getLearningRoute: () => request<LearningRouteView>('/api/v1/learning-route'),
+	generateLearningRoute: (config: LearningRouteConfig, knowledgeOnly = false, adjustment = '') => request<LearningRouteView>('/api/v1/learning-route/generate', { method: 'POST', body: JSON.stringify({ config, knowledge_only: knowledgeOnly, adjustment }) }),
+	editLearningRoute: (version: LearningRouteVersion) => request<LearningRouteView>('/api/v1/learning-route/draft', { method: 'PATCH', body: JSON.stringify({ version_id: version.id, revision: version.revision, config: version.config, plans: version.plans }) }),
+	importLearningRoute: (version: LearningRouteVersion) => request<LearningRouteView>('/api/v1/learning-route/import', { method: 'POST', body: JSON.stringify({ version_id: version.id, revision: version.revision, content_hash: version.content_hash }) }),
+	retryLearningRouteImport: (id: string) => request<LearningRouteView>(`/api/v1/learning-route/imports/${id}/retry`, { method: 'POST' }),
   generateProjectRecommendations: (adjustment = '') => request<ProjectRecommendationsView>('/api/v1/project-recommendations', { method: 'POST', body: JSON.stringify({ adjustment }) }),
   selectRecommendedProject: (reportId: string, projectId: string) => request<ProjectRecommendationsView>('/api/v1/project-recommendations/selection', { method: 'PUT', body: JSON.stringify({ report_id: reportId, project_id: projectId }) }),
   getProfileSettings: () => request<{ settings: UserProfileSettings }>('/api/v1/profile/settings'),

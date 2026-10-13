@@ -129,6 +129,65 @@ func NewService(repo Repository, targets TargetReader, market MarketReader, prof
 	return &Service{repo, targets, market, profiles}
 }
 
+// CurrentComparison computes live conclusions without requiring or changing a
+// saved report. Planning and recommendation summaries use this same rule engine.
+func (s *Service) CurrentComparison(ctx context.Context, user uuid.UUID) (View, error) {
+	var view View
+	err := s.repo.WithinUserSnapshot(ctx, user, func(snapshotCtx context.Context) error {
+		ss, err := s.load(snapshotCtx, user)
+		if err != nil {
+			return err
+		}
+		view = View{Readiness: ss.readiness, SourceFingerprint: ss.hash}
+		if ss.readiness.Code == "ready" {
+			report := Build(ss.target.ID, ss.requirements, ss.market.Abilities, ss.profile.Capabilities)
+			report.GeneratedAt = time.Time{}
+			view.Report = &report
+		}
+		return nil
+	})
+	return view, err
+}
+
+// RequirementBasis excludes assessed levels while retaining the complete JD
+// requirement set and its evidence. A level-only update is not a new project topic.
+func (s *Service) RequirementBasis(ctx context.Context, user uuid.UUID) (string, error) {
+	var hash string
+	err := s.repo.WithinUserSnapshot(ctx, user, func(txCtx context.Context) error {
+		ss, e := s.load(txCtx, user)
+		if e != nil {
+			return e
+		}
+		type candidate struct {
+			ID             uuid.UUID
+			Name, Evidence string
+		}
+		type requirement struct {
+			ID, JDID                 uuid.UUID
+			Operator, Kind, Evidence string
+			Count                    int
+			Options                  []candidate
+		}
+		values := []requirement{}
+		for _, q := range ss.requirements {
+			v := requirement{ID: q.ID, JDID: q.JDID, Operator: q.Operator, Kind: q.Kind, Evidence: q.Evidence, Count: q.RequiredCount, Options: []candidate{}}
+			for _, o := range q.Options {
+				v.Options = append(v.Options, candidate{o.AbilityID, o.Name, o.Evidence})
+			}
+			sort.Slice(v.Options, func(i, j int) bool {
+				return v.Options[i].ID.String()+v.Options[i].Evidence < v.Options[j].ID.String()+v.Options[j].Evidence
+			})
+			values = append(values, v)
+		}
+		sort.Slice(values, func(i, j int) bool { return values[i].ID.String() < values[j].ID.String() })
+		raw, _ := json.Marshal(values)
+		sum := sha256.Sum256(raw)
+		hash = hex.EncodeToString(sum[:])
+		return nil
+	})
+	return hash, err
+}
+
 type snapshot struct {
 	target        target.Target
 	market        market.Profile

@@ -192,10 +192,14 @@ func (c *Client) TestConnection(ctx context.Context, apiKey, model string) error
 // GenerateJSON runs a schema-constrained application prompt with the same
 // user-owned DeepSeek credentials used by JD analysis.
 func (c *Client) GenerateJSON(ctx context.Context, apiKey, model, system, prompt string, output any) error {
+	return c.GenerateJSONWithLimit(ctx, apiKey, model, system, prompt, 4000, output)
+}
+
+func (c *Client) GenerateJSONWithLimit(ctx context.Context, apiKey, model, system, prompt string, maxTokens int, output any) error {
 	content, err := c.chat(ctx, apiKey, chatRequest{
 		Model:    model,
 		Messages: []message{{Role: "system", Content: system}, {Role: "user", Content: prompt}},
-		Thinking: thinking{Type: "disabled"}, ResponseFormat: responseFormat{Type: "json_object"}, MaxTokens: 4000,
+		Thinking: thinking{Type: "disabled"}, ResponseFormat: responseFormat{Type: "json_object"}, MaxTokens: maxTokens,
 	})
 	if err != nil {
 		return err

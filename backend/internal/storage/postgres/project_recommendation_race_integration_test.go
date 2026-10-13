@@ -260,8 +260,8 @@ func TestProjectRecommendationKeepsUserLockUntilCommitIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	view, err := s.Get(ctx, user)
-	if err != nil || view.Report == nil || !view.Stale {
-		t.Fatalf("later profile edit did not mark report stale: %+v %v", view, err)
+	if err != nil || view.Report == nil || view.Stale {
+		t.Fatalf("level-only edit must preserve published project report: %+v %v", view, err)
 	}
 	if !errors.Is(recommendationValidator(s, job)(ctx), projectrecs.ErrInputsChanged) {
 		t.Fatal("later edit not detected")

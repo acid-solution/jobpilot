@@ -96,16 +96,20 @@ type JobView struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 type View struct {
-	Readiness         knowledgegaps.Readiness `json:"readiness"`
-	Report            *Report                 `json:"report,omitempty"`
-	SelectedProjectID string                  `json:"selected_project_id,omitempty"`
-	Stale             bool                    `json:"stale"`
-	Job               *JobView                `json:"job,omitempty"`
+	SelectionNeedsReview bool                    `json:"selection_needs_review"`
+	Knowledge            *knowledgegaps.Report   `json:"knowledge_preparation,omitempty"`
+	Readiness            knowledgegaps.Readiness `json:"readiness"`
+	Report               *Report                 `json:"report,omitempty"`
+	SelectedProjectID    string                  `json:"selected_project_id,omitempty"`
+	Stale                bool                    `json:"stale"`
+	Job                  *JobView                `json:"job,omitempty"`
 }
 type Stored struct {
-	Report            Report
-	SourceHash        string
-	SelectedProjectID string
+	SelectedContextHash string
+	ProjectContextHash  string
+	Report              Report
+	SourceHash          string
+	SelectedProjectID   string
 }
 type MarketAbility struct {
 	Name           string   `json:"name"`
@@ -119,6 +123,8 @@ type UserAbility struct {
 	Source string `json:"source"`
 }
 type Input struct {
+	RequirementBasis   string          `json:"requirement_basis,omitempty"`
+	ExperienceBasis    string          `json:"experience_basis,omitempty"`
 	Goal               string          `json:"goal"`
 	EmploymentType     string          `json:"employment_type"`
 	GraduationYear     *int            `json:"graduation_year,omitempty"`
@@ -231,6 +237,36 @@ func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, err
 	}
 	input := Input{Goal: t.Title, EmploymentType: t.EmploymentType, GraduationYear: t.GraduationYear,
 		IncludedJDCount: m.IncludedJDCount, ExistingExperience: strings.TrimSpace(settings.ExistingExperience)}
+	if basis, ok := s.gaps.(interface {
+		RequirementBasis(context.Context, uuid.UUID) (string, error)
+	}); ok {
+		input.RequirementBasis, err = basis.RequirementBasis(ctx, userID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+	}
+	if materials, ok := s.profiles.(interface {
+		ListMaterials(context.Context, uuid.UUID) ([]profile.Material, error)
+	}); ok {
+		items, e := materials.ListMaterials(ctx, userID)
+		if e != nil {
+			return Snapshot{}, e
+		}
+		type experience struct {
+			ID          uuid.UUID
+			Title, Text string
+		}
+		values := []experience{}
+		for _, item := range items {
+			if item.ConfirmedAt != nil {
+				values = append(values, experience{item.ID, item.Title, item.Text})
+			}
+		}
+		sort.Slice(values, func(i, j int) bool { return values[i].ID.String() < values[j].ID.String() })
+		raw, _ := json.Marshal(values)
+		sum := sha256.Sum256(raw)
+		input.ExperienceBasis = hex.EncodeToString(sum[:])
+	}
 	if runes := []rune(input.ExistingExperience); len(runes) > 2500 {
 		input.ExistingExperience = string(runes[:2500])
 	}
@@ -299,6 +335,15 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
 		return View{}, err
 	}
 	v := View{Readiness: ss.Readiness}
+	if current, ok := s.gaps.(interface {
+		CurrentComparison(context.Context, uuid.UUID) (knowledgegaps.View, error)
+	}); ok {
+		live, e := current.CurrentComparison(ctx, userID)
+		if e != nil {
+			return View{}, e
+		}
+		v.Knowledge = live.Report
+	}
 	if ss.GoalSignature == "" {
 		return v, nil
 	}
@@ -310,7 +355,8 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
 	if stored != nil {
 		v.Report = &stored.Report
 		v.SelectedProjectID = stored.SelectedProjectID
-		v.Stale = stored.SourceHash != ss.SourceHash
+		v.Stale = stored.ProjectContextHash == "" || stored.ProjectContextHash != ProjectContextHash(ss.Input)
+		v.SelectionNeedsReview = stored.SelectedProjectID != "" && stored.SelectedContextHash != ProjectContextHash(ss.Input)
 	}
 	return v, nil
 }
@@ -352,7 +398,14 @@ func (s *Service) Select(ctx context.Context, userID, reportID uuid.UUID, projec
 	if ss.GoalSignature == "" {
 		return View{}, ErrNotFound
 	}
-	if err = s.repo.Select(ctx, userID, ss.GoalSignature, reportID, projectID); err != nil {
+	if scoped, ok := s.repo.(interface {
+		SelectWithContext(context.Context, uuid.UUID, string, uuid.UUID, string, string) error
+	}); ok {
+		err = scoped.SelectWithContext(ctx, userID, ss.GoalSignature, reportID, projectID, ProjectContextHash(ss.Input))
+	} else {
+		err = s.repo.Select(ctx, userID, ss.GoalSignature, reportID, projectID)
+	}
+	if err != nil {
 		return View{}, err
 	}
 	return s.Get(ctx, userID)
@@ -365,4 +418,22 @@ func ValidateDraft(d Draft) error {
 		return fmt.Errorf("project draft too long")
 	}
 	return nil
+}
+
+// Generation still uses SourceHash and final transactional validation. This
+// separate hash is only the dependency boundary of a published project choice.
+func ProjectContextHash(input Input) string {
+	input.UserAbilities = nil
+	input.MarketAbilities = append([]MarketAbility{}, input.MarketAbilities...)
+	for i := range input.MarketAbilities {
+		input.MarketAbilities[i].Level = 0
+		input.MarketAbilities[i].Evidence = append([]string{}, input.MarketAbilities[i].Evidence...)
+		sort.Strings(input.MarketAbilities[i].Evidence)
+	}
+	sort.Slice(input.MarketAbilities, func(i, j int) bool { return input.MarketAbilities[i].Name < input.MarketAbilities[j].Name })
+	input.Directions = append([]string{}, input.Directions...)
+	sort.Strings(input.Directions)
+	raw, _ := json.Marshal(input)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }

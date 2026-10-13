@@ -30,6 +30,7 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 type Action struct {
+	Result           json.RawMessage  `json:"result,omitempty"`
 	ID               uuid.UUID        `json:"id"`
 	Kind             string           `json:"kind"`
 	Arguments        json.RawMessage  `json:"arguments"`

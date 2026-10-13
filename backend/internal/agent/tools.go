@@ -8,7 +8,9 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/cloudwego/eino/components/tool"
@@ -17,16 +19,17 @@ import (
 )
 
 type readArgs struct {
-	Resource string `json:"resource" jsonschema_description:"target,job_catalog,jd_list,jd_detail,market_profile,user_profile,profile_settings,materials,knowledge_gaps,recommendations,source_search,task_status"`
+	Resource string `json:"resource" jsonschema_description:"target,job_catalog,jd_list,jd_detail,market_profile,user_profile,profile_settings,materials,knowledge_gaps,recommendations,learning_route,source_search,task_status"`
 	ID       string `json:"id,omitempty" jsonschema_description:"JD 详情时的 UUID"`
 	Query    string `json:"query,omitempty" jsonschema_description:"检索用户原始 JD、简历和经历时的问题"`
 }
 type writeArgs struct {
-	Kind      string          `json:"kind" jsonschema_description:"target_update,jd_add,jd_batch,jd_edit,jd_delete,jd_retry,jd_review_retry,jd_grading_retry,material_add,material_edit,material_delete,material_confirm,profile_settings,capability_level,gaps_analyze,recommendations_generate,project_select"`
+	Kind      string          `json:"kind" jsonschema_description:"target_update,jd_add,jd_batch,jd_edit,jd_delete,jd_retry,jd_review_retry,jd_grading_retry,material_add,material_edit,material_delete,material_confirm,profile_settings,capability_level,gaps_analyze,recommendations_generate,project_select,route_generate,route_edit,route_import,route_import_retry"`
 	Arguments json.RawMessage `json:"arguments" jsonschema_description:"与现有 JobPilot 业务接口一致的 JSON 对象。旧资源操作需提供 id；项目选择需 report_id 和 project_id。"`
 }
 
 var actionTitles = map[string]string{
+	"route_generate": "生成学习路线", "route_edit": "编辑学习路线草案", "route_import": "导入 StudyFlow 学习路线", "route_import_retry": "重试已确认的学习路线导入",
 	"target_update": "更改求职目标", "jd_add": "添加 JD", "jd_batch": "批量添加 JD", "jd_edit": "修改 JD 原文", "jd_delete": "删除 JD", "jd_retry": "重新分析 JD", "jd_review_retry": "重试能力审核", "jd_grading_retry": "重试能力判级",
 	"material_add": "添加经历或简历文字", "material_edit": "修改材料", "material_delete": "删除材料", "material_confirm": "确认材料", "profile_settings": "修改画像必要信息", "capability_level": "设置能力等级", "gaps_analyze": "生成知识短板报告", "recommendations_generate": "生成项目推荐", "project_select": "选择项目",
 }
@@ -98,6 +101,9 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 				}
 			}
 			if a.Status == "succeeded" {
+				if a.Kind == "route_generate" {
+					return "已创建学习路线生成任务，尚未生成最终路线；请使用 learning_route 查询进度。", nil
+				}
 				return "用户已确认，操作成功：" + a.Summary, nil
 			}
 			if a.Status == "cancelled" {
@@ -117,14 +123,36 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 		}
 		// Serialize the short snapshot/persistence step with page and background
 		// writes. Never hold the lock while waiting for a model or the user.
+		proposalCtx := runCtx
 		if s.MutationLocker != nil {
 			release, err := s.MutationLocker.Lock(runCtx, user)
 			if err != nil {
 				return "", err
 			}
 			defer release()
+			var invalidate func()
+			proposalCtx, invalidate = mutationlock.WithHeldLock(runCtx, user)
+			defer invalidate()
 		}
-		expected, err := s.snapshot(runCtx, user, input.Kind, arguments)
+		if input.Kind == "route_import" {
+			if s.Learning == nil {
+				return "", errors.New("学习路线尚未启用")
+			}
+			view, e := s.Learning.Get(proposalCtx, user)
+			if e != nil {
+				return "", e
+			}
+			var confirmation learningroutes.ConfirmInput
+			if e = json.Unmarshal(arguments, &confirmation); e != nil || view.Version == nil || confirmation.VersionID != view.Version.ID || confirmation.Revision != view.Version.Revision || confirmation.ContentHash != view.Version.ContentHash {
+				return "", ErrStale
+			}
+			arguments = marshal(struct {
+				learningroutes.ConfirmInput
+				Preview *learningroutes.Version `json:"preview"`
+				Goal    string                  `json:"goal_title"`
+			}{confirmation, view.Version, view.GoalTitle})
+		}
+		expected, err := s.snapshot(proposalCtx, user, input.Kind, arguments)
 		if err != nil {
 			return "", err
 		}
@@ -141,7 +169,7 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 		if details.Title != "" {
 			summary += " · " + details.Title
 		}
-		a, err := s.Repo.CreateAction(runCtx, conversation, user, scope, input.Kind, arguments, summary, expected)
+		a, err := s.Repo.CreateAction(proposalCtx, conversation, user, scope, input.Kind, arguments, summary, expected)
 		if err != nil {
 			return "", err
 		}
@@ -161,6 +189,7 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 	}
 	var outcome Event
 	var outcomeErr error
+	var external *learningroutes.ImportRequest
 	err := s.Transactions.WithinUserTransaction(ctx, user, func(txCtx context.Context) error {
 		// The transaction holds the same account advisory lock used by page and
 		// worker mutations. Every repository call below reuses its connection.
@@ -213,6 +242,23 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 			outcome = Event{Type: "error", Code: "business_operation_failed", Text: businessErr.Error()}
 			return nil
 		}
+		if a.Kind == "route_import" || a.Kind == "route_import_retry" {
+			request, ok := value.(learningroutes.ImportRequest)
+			if !ok {
+				return errors.New("missing frozen import request")
+			}
+			external = &request
+			binder, ok := s.Repo.(interface {
+				BindExternalImport(context.Context, uuid.UUID, uuid.UUID) error
+			})
+			if !ok {
+				return errors.New("external import receipt persistence unavailable")
+			}
+			if e := binder.BindExternalImport(txCtx, a.ID, request.ID); e != nil {
+				return e
+			}
+			return nil
+		}
 		if err := s.Repo.FinishAction(txCtx, a.ID, "succeeded", marshal(value), ""); err != nil {
 			return err
 		}
@@ -224,12 +270,29 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 		// tell the frontend or model it succeeded before the transaction commits.
 		return err
 	}
+	if external != nil {
+		return s.finishExternalRoute(ctx, user, a, *external, emit)
+	}
 	emit(outcome)
 	return outcomeErr
 }
 
 func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in readArgs, emit func(Event)) (string, error) {
 	switch in.Resource {
+	case "learning_route":
+		if s.Learning == nil {
+			return "学习路线尚未启用", nil
+		}
+		if in.ID != "" {
+			id, e := uuid.Parse(in.ID)
+			if e != nil {
+				return "", e
+			}
+			v, e := s.Learning.GetImport(ctx, user, id)
+			return compact(v), e
+		}
+		v, e := s.Learning.Get(ctx, user)
+		return compact(v), e
 	case "target":
 		if t == nil {
 			return "尚未设置求职目标", nil
@@ -332,6 +395,32 @@ func decode[T any](raw json.RawMessage) (T, error) {
 func canonicalArguments(kind string, raw json.RawMessage) (json.RawMessage, error) {
 	var value any
 	switch kind {
+	case "route_generate":
+		v, e := decode[learningroutes.GenerateInput](raw)
+		if e != nil {
+			return nil, e
+		}
+		value = v
+	case "route_edit":
+		v, e := decode[learningroutes.EditInput](raw)
+		if e != nil {
+			return nil, e
+		}
+		value = v
+	case "route_import":
+		v, e := decode[learningroutes.ConfirmInput](raw)
+		if e != nil {
+			return nil, e
+		}
+		value = v
+	case "route_import_retry":
+		var v struct {
+			ID uuid.UUID `json:"id"`
+		}
+		if e := json.Unmarshal(raw, &v); e != nil {
+			return nil, e
+		}
+		value = v
 	case "target_update":
 		v, err := decode[target.UpsertInput](raw)
 		if err != nil {
@@ -448,6 +537,10 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID, kind string, arg
 		keys = append(keys, "target:"+t.ID.String())
 	}
 	switch kind {
+	case "route_generate", "route_edit", "route_import":
+		keys = append(keys, "market", "profile", "profile_settings", "recommendations", "learning_routes")
+	case "route_import_retry":
+		keys = append(keys, "learning_routes")
 	case "jd_edit", "jd_delete", "jd_retry", "jd_review_retry", "jd_grading_retry", "material_edit", "material_delete", "material_confirm", "capability_level":
 		id, err := parseID(args, "id")
 		if err != nil {
@@ -494,6 +587,8 @@ func (s *Service) snapshotHash(ctx context.Context, user uuid.UUID, kind string,
 	}
 	var resource any = scope
 	switch kind {
+	case "route_generate", "route_edit", "route_import", "route_import_retry":
+		resource, err = s.learningGuard(ctx, user, kind, args)
 	case "target_update", "jd_add", "jd_batch":
 		resource = t
 	case "jd_edit", "jd_delete", "jd_retry", "jd_review_retry", "jd_grading_retry":
@@ -563,6 +658,42 @@ func (s *Service) snapshotHash(ctx context.Context, user uuid.UUID, kind string,
 }
 func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args json.RawMessage) (any, error) {
 	switch kind {
+	case "route_generate":
+		if s.Learning == nil {
+			return nil, errors.New("学习路线尚未启用")
+		}
+		in, e := decode[learningroutes.GenerateInput](args)
+		if e != nil {
+			return nil, e
+		}
+		return s.Learning.Generate(ctx, user, in)
+	case "route_edit":
+		if s.Learning == nil {
+			return nil, errors.New("学习路线尚未启用")
+		}
+		in, e := decode[learningroutes.EditInput](args)
+		if e != nil {
+			return nil, e
+		}
+		return s.Learning.Edit(ctx, user, in)
+	case "route_import":
+		if s.Learning == nil {
+			return nil, errors.New("学习路线尚未启用")
+		}
+		in, e := decode[learningroutes.ConfirmInput](args)
+		if e != nil {
+			return nil, e
+		}
+		return s.Learning.AdmitImport(ctx, user, in)
+	case "route_import_retry":
+		if s.Learning == nil {
+			return nil, errors.New("学习路线尚未启用")
+		}
+		id, e := parseID(args, "id")
+		if e != nil {
+			return nil, e
+		}
+		return s.Learning.GetImport(ctx, user, id)
 	case "target_update":
 		in, e := decode[target.UpsertInput](args)
 		if e != nil {

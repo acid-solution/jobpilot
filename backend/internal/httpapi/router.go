@@ -73,6 +73,7 @@ type ProjectRecommendationsService interface {
 }
 
 type Dependencies struct {
+	LearningRoutesService         LearningRoutesService
 	AgentService                  AgentService
 	MutationLocker                mutationlock.Locker
 	IdentityResolver              identity.Resolver
@@ -111,6 +112,9 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 		api.Use(serializeUserMutations(dependencies.MutationLocker))
 	}
 	{
+		if dependencies.LearningRoutesService != nil {
+			registerLearningRoutes(api, dependencies.LearningRoutesService)
+		}
 		if dependencies.AgentService != nil {
 			api.GET("/agent/conversations", listAgentConversations(dependencies.AgentService))
 			api.POST("/agent/conversations", createAgentConversation(dependencies.AgentService))
@@ -171,7 +175,7 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 func serializeUserMutations(locker mutationlock.Locker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions ||
-			strings.HasPrefix(c.Request.URL.Path, "/api/v1/agent/") {
+			strings.HasPrefix(c.Request.URL.Path, "/api/v1/agent/") || c.Request.URL.Path == "/api/v1/learning-route/import" || strings.HasPrefix(c.Request.URL.Path, "/api/v1/learning-route/imports/") {
 			c.Next()
 			return
 		}

@@ -14,6 +14,11 @@ import (
 const defaultDevUserID = "00000000-0000-0000-0000-000000000001"
 
 type Config struct {
+	LearningRoutesEnabled          bool
+	StudyFlowMCPURL                string
+	StudyFlowWebURL                string
+	AuthExchangeURL                string
+	JobPilotExchangeSecret         string
 	Environment                    string
 	HTTPAddr                       string
 	WorkerCount                    int
@@ -70,6 +75,10 @@ func loadValues(path string) (configValues, error) {
 }
 
 func parse(values configValues) (Config, error) {
+	learningRoutesEnabled, err := strconv.ParseBool(values.valueOrDefault("LEARNING_ROUTES_ENABLED", "false"))
+	if err != nil {
+		return Config{}, errors.New("LEARNING_ROUTES_ENABLED must be true or false")
+	}
 	environment := values.valueOrDefault("APP_ENV", "development")
 	databaseURL := values["DATABASE_URL"]
 	if databaseURL == "" {
@@ -134,6 +143,11 @@ func parse(values configValues) (Config, error) {
 		WorkerCount:                    workerCount,
 		DatabaseURL:                    databaseURL,
 		AuthMode:                       authMode,
+		LearningRoutesEnabled:          learningRoutesEnabled,
+		StudyFlowMCPURL:                values["STUDYFLOW_MCP_URL"],
+		StudyFlowWebURL:                values.valueOrDefault("STUDYFLOW_WEB_URL", "http://127.0.0.1:5174"),
+		AuthExchangeURL:                values["AUTH_EXCHANGE_URL"],
+		JobPilotExchangeSecret:         values["JOBPILOT_EXCHANGE_SECRET"],
 		AuthJWKSURL:                    values.valueOrDefault("AUTH_JWKS_URL", "http://127.0.0.1:18082/.well-known/jwks.json"),
 		AuthIssuer:                     values.valueOrDefault("AUTH_ISSUER", "shared-auth"),
 		AuthAudience:                   values.valueOrDefault("AUTH_AUDIENCE", "jobpilot"),

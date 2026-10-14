@@ -534,6 +534,9 @@ export const authAPI = {
 }
 
 export const jobPilotAPI = {
+  getModelUsageSummary: (query: string) => request<import('./modelUsageTypes').UsageSummary[]>(`/api/v1/model-usage/summary?${query}`),
+  getModelUsageOperations: (query: string) => request<import('./modelUsageTypes').UsagePage<import('./modelUsageTypes').UsageOperation>>(`/api/v1/model-usage/operations?${query}`),
+  getModelUsageCalls: (query: string) => request<import('./modelUsageTypes').UsagePage<import('./modelUsageTypes').UsageCall>>(`/api/v1/model-usage/calls?${query}`),
 	getJobCatalog: () => request<JobCategory[]>('/api/v1/catalog/job-directions'),
   getCurrentTarget: () => request<JobTarget>('/api/v1/targets/current'),
   saveCurrentTarget: (input: SaveTargetInput) => request<JobTarget>('/api/v1/targets/current', {

@@ -354,7 +354,13 @@ func (r *AbilityReviewRepository) Fail(ctx context.Context, input abilityreview.
 		}
 	}
 	if usageID != uuid.Nil {
-		if _, err = tx.ExecContext(ctx, `UPDATE platform_model_usage SET status='failed',error_code=$2,updated_at=NOW() WHERE id=$1`, usageID, code); err != nil {
+		query := `UPDATE platform_model_usage SET status='failed',error_code=$2,updated_at=NOW() WHERE id=$1`
+		if code == "usage_record_unavailable" {
+			// The recorder refused dispatch. Release only a reservation with no
+			// actual HTTP call; network errors must still consume the quota.
+			query = `DELETE FROM platform_model_usage WHERE id=$1 AND $2='usage_record_unavailable' AND NOT EXISTS(SELECT 1 FROM model_usage_calls WHERE legacy_usage_id=$1)`
+		}
+		if _, err = tx.ExecContext(ctx, query, usageID, code); err != nil {
 			return err
 		}
 	}

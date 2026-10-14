@@ -3,6 +3,7 @@ package jdanalysis
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
@@ -67,6 +68,7 @@ func (w *NormalizationWorker) Run(ctx context.Context, concurrency int) {
 
 func (w *NormalizationWorker) runOne(ctx context.Context, job NormalizationJob) {
 	taskCtx, cancel := context.WithCancel(ctx)
+	taskCtx = modelusage.For(taskCtx, job.UserID, job.ID, "jd_normalization", "user")
 	heartbeatDone := make(chan error, 1)
 	go func() {
 		defer close(heartbeatDone)

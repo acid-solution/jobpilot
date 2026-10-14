@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/google/uuid"
 )
 
@@ -314,6 +315,8 @@ func (s *Service) StartSession(ctx context.Context, userID uuid.UUID, input Star
 	if input.Mode == ModeInitial {
 		count = s.questionCount
 	}
+	sessionID := uuid.New()
+	ctx = modelusage.For(modelusage.Resource(ctx, uuid.Nil, sessionID), userID, sessionID, "interview", "user")
 	questions, err := s.assessor.GenerateQuestions(ctx, userID, capability, input.Mode, target, count)
 	if err != nil {
 		return Session{}, err
@@ -332,7 +335,7 @@ func (s *Service) StartSession(ctx context.Context, userID uuid.UUID, input Star
 			questions[i].Explanation = ""
 		}
 	}
-	return s.repository.CreateSession(ctx, userID, Session{AbilityID: input.AbilityID, AbilityName: capability.Name, Mode: input.Mode, BaseLevel: base, TargetLevel: target, Status: "ready", Questions: questions})
+	return s.repository.CreateSession(ctx, userID, Session{ID: sessionID, AbilityID: input.AbilityID, AbilityName: capability.Name, Mode: input.Mode, BaseLevel: base, TargetLevel: target, Status: "ready", Questions: questions})
 }
 func (s *Service) GetSession(ctx context.Context, userID, id uuid.UUID) (Session, error) {
 	return s.repository.GetSession(ctx, userID, id)
@@ -369,6 +372,7 @@ func (s *Service) ConfirmSession(ctx context.Context, userID, id uuid.UUID) (Ses
 	return s.repository.ConfirmSession(ctx, userID, id)
 }
 func (s *Service) SubmitSession(ctx context.Context, userID, id uuid.UUID, answers []AnswerInput) (Session, error) {
+	ctx = modelusage.For(modelusage.Resource(ctx, uuid.Nil, id), userID, id, "interview", "user")
 	session, err := s.repository.GetSession(ctx, userID, id)
 	if err != nil {
 		return Session{}, err

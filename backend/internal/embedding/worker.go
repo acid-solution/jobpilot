@@ -3,6 +3,7 @@ package embedding
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
@@ -69,6 +70,11 @@ func (w *Worker) Run(ctx context.Context, concurrency int) {
 
 func (w *Worker) runOne(ctx context.Context, job Job) {
 	jobCtx, cancel := context.WithCancel(ctx)
+	user := uuid.Nil
+	if job.UserID != nil {
+		user = *job.UserID
+	}
+	jobCtx = modelusage.For(jobCtx, user, job.ID, "embedding", "platform")
 	defer cancel()
 	heartbeatDone := make(chan error, 1)
 	go func() {

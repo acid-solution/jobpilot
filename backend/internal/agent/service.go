@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -82,6 +83,7 @@ type SourceMatch struct {
 }
 
 type Service struct {
+	ModelHTTP        *http.Client
 	Learning         *learningroutes.Service
 	Repo             Repository
 	Checkpoints      CheckpointStore

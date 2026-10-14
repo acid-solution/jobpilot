@@ -3,6 +3,7 @@ package jdanalysis
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"strings"
 	"time"
@@ -308,6 +309,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	}
 
 	taskCtx, cancelTask := context.WithCancel(ctx)
+	taskCtx = modelusage.For(modelusage.Resource(taskCtx, job.TargetID, job.JobDescriptionID), job.UserID, job.ID, "jd_analysis", "user")
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
 	heartbeatDone := make(chan error, 1)
 	go w.maintainLease(heartbeatCtx, cancelTask, job, heartbeatDone)
@@ -376,7 +378,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		} else {
 			var reviewed ClassificationReviewResult
 			reviewed, err = w.classificationReview.Reviewer.ReviewJobClassifications(
-				taskCtx, w.classificationReview.APIKey, w.classificationReview.Model, job.RawText,
+				modelusage.For(taskCtx, job.UserID, job.ID, "jd_analysis", "platform"), w.classificationReview.APIKey, w.classificationReview.Model, job.RawText,
 				ClassificationReviewInput{Title: result.Title, Responsibilities: result.Responsibilities,
 					Classifications: result.Classifications, Catalog: catalog.JobCategories},
 			)

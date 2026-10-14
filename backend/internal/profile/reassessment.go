@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
@@ -61,6 +62,7 @@ func (w *ReassessmentWorker) Run(ctx context.Context, concurrency int) {
 }
 func (w *ReassessmentWorker) runOne(ctx context.Context, job ReassessmentJob) {
 	taskCtx, cancel := context.WithCancel(ctx)
+	taskCtx = modelusage.For(taskCtx, job.UserID, job.ID, "material_analysis", "user")
 	defer cancel()
 	heartbeatDone := make(chan error, 1)
 	go func() {

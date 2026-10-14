@@ -3,6 +3,7 @@ package abilityreview
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
@@ -153,6 +154,14 @@ func (w *Worker) runOne(ctx context.Context) error {
 	}
 
 	callCtx, cancel := context.WithCancel(ctx)
+	purpose := "ability_review"
+	if request.ReviewType == "alias" {
+		purpose = "ability_alias_review"
+	}
+	callCtx = modelusage.For(callCtx, request.UserID, request.ID, purpose, "platform")
+	scope := modelusage.From(callCtx)
+	scope.LegacyUsageID = usageID
+	callCtx = modelusage.WithScope(callCtx, scope)
 	defer cancel()
 	heartbeatDone := make(chan error, 1)
 	go func() {
@@ -197,6 +206,9 @@ func (w *Worker) runOne(ctx context.Context) error {
 func errorCode(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, modelusage.ErrUnavailable) {
+		return "usage_record_unavailable"
 	}
 	return err.Error()
 }

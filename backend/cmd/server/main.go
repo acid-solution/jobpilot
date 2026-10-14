@@ -24,6 +24,7 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/model/deepseek"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/secure"
@@ -94,11 +95,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	deepSeekClient := deepseek.NewClient(configuration.DeepSeekBaseURL, nil)
+	usageRepository := postgres.NewModelUsageRepository(database)
+	prices, err := modelusage.LoadPricing(configuration.ModelPricingFile)
+	if err != nil {
+		return err
+	}
+	deepSeekHTTP := &http.Client{Timeout: 3 * time.Minute, Transport: &modelusage.Transport{Repo: usageRepository, Provider: "deepseek", Pricing: prices}}
+	deepSeekClient := deepseek.NewClient(configuration.DeepSeekBaseURL, deepSeekHTTP)
 	modelConfigRepository := postgres.NewModelConfigRepository(database)
 	modelConfigService := modelconfig.NewService(modelConfigRepository, credentialCipher, deepSeekClient)
 	embeddingRepository := postgres.NewEmbeddingRepository(database)
-	embeddingClient := embedding.NewClient(configuration.EmbeddingBaseURL, configuration.PlatformEmbeddingAPIKey, nil)
+	embeddingClient := embedding.NewClient(configuration.EmbeddingBaseURL, configuration.PlatformEmbeddingAPIKey, &http.Client{Timeout: 45 * time.Second, Transport: &modelusage.Transport{Repo: usageRepository, Provider: "bailian", Payer: "platform", Pricing: prices}})
 	profileRepository := postgres.NewProfileRepository(database)
 	profileAssessor := profile.NewModelAssessor(modelConfigService, deepSeekClient)
 	if configuration.EmbeddingEnabled && embeddingClient.Configured() {
@@ -141,6 +148,7 @@ func run() error {
 	gradingWorker := abilitygrading.NewWorker(gradingRepository, deepSeekClient, configuration.JDAbilityGradingEnabled,
 		configuration.PlatformDeepSeekAPIKey, configuration.PlatformReviewModel, 2*time.Second)
 	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
+	runtimeContext = modelusage.WithRecorder(runtimeContext, usageRepository)
 	var runtimeWorkers sync.WaitGroup
 	defer func() {
 		cancelRuntime()
@@ -189,8 +197,9 @@ func run() error {
 			}
 		}()
 		agentService = &agent.Service{
-			Learning: learningService,
-			Repo:     agentRepository, Checkpoints: postgres.NewAgentCheckpointStore(database),
+			ModelHTTP: deepSeekHTTP,
+			Learning:  learningService,
+			Repo:      agentRepository, Checkpoints: postgres.NewAgentCheckpointStore(database),
 			MutationLocker: mutationLocker,
 			Transactions:   agentRepository,
 			Targets:        targetService, Market: marketService, Profile: profileService,
@@ -203,6 +212,7 @@ func run() error {
 	}
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
+		ModelUsage:                    usageRepository,
 		LearningRoutesService:         learningAPI,
 		AgentService:                  agentService,
 		MutationLocker:                mutationLocker,

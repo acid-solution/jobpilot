@@ -3,6 +3,7 @@ package projectrecs
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
@@ -46,6 +47,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	taskCtx, cancel := context.WithCancel(ctx)
+	taskCtx = modelusage.For(modelusage.Resource(taskCtx, job.TargetID, uuid.Nil), job.UserID, job.ID, "project_recommendation", "user")
 	defer cancel()
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	done := make(chan error, 1)

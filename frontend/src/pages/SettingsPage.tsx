@@ -1,8 +1,28 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, KeyRound, LoaderCircle, ShieldCheck, Trash2 } from 'lucide-react'
 import { jobPilotAPI, type ModelConfig } from '../api'
+import { ModelUsagePanel } from './ModelUsagePanel'
 
 export function SettingsPage() {
+  const [tab, setTab] = useState<'config' | 'usage'>('config')
+  return (
+    <div className="page-content settings-page">
+      <div className="page-heading-row">
+        <div>
+          <h1>设置</h1>
+          <p className="page-description">配置模型服务，查看调用用量与估算费用。</p>
+        </div>
+      </div>
+      <div className="market-tabs" role="tablist" aria-label="设置页面">
+        <button type="button" role="tab" aria-selected={tab === 'config'} className={tab === 'config' ? 'is-current' : ''} onClick={() => setTab('config')}>模型配置</button>
+        <button type="button" role="tab" aria-selected={tab === 'usage'} className={tab === 'usage' ? 'is-current' : ''} onClick={() => setTab('usage')}>模型用量</button>
+      </div>
+      {tab === 'config' ? <ModelSettings /> : <ModelUsagePanel />}
+    </div>
+  )
+}
+
+function ModelSettings() {
   const [config, setConfig] = useState<ModelConfig | null>(null)
   const [apiKey, setAPIKey] = useState('')
   const [loading, setLoading] = useState(true)
@@ -67,14 +87,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="page-content settings-page">
-      <div className="page-heading-row">
-        <div>
-          <h1>设置</h1>
-          <p className="page-description">配置个人分析使用的模型服务。当前先支持 DeepSeek。</p>
-        </div>
-      </div>
-
+    <div>
       <section className="settings-card">
         <div className="settings-card-head">
           <span className="settings-provider-icon"><KeyRound size={20} /></span>

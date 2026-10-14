@@ -3,6 +3,7 @@ package abilitygrading
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
@@ -141,6 +142,7 @@ func (w *Worker) runOne(ctx context.Context) error {
 		return err
 	}
 	callContext, cancel := context.WithCancel(ctx)
+	callContext = modelusage.For(modelusage.Resource(callContext, job.TargetID, job.JobDescriptionID), job.UserID, job.ID, "jd_grading", "platform")
 	defer cancel()
 	heartbeatDone := make(chan error, 1)
 	go func() {

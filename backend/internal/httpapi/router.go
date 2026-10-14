@@ -11,6 +11,7 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
@@ -73,6 +74,7 @@ type ProjectRecommendationsService interface {
 }
 
 type Dependencies struct {
+	ModelUsage                    modelusage.Repository
 	LearningRoutesService         LearningRoutesService
 	AgentService                  AgentService
 	MutationLocker                mutationlock.Locker
@@ -108,6 +110,10 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 
 	api := router.Group("/api/v1")
 	api.Use(identity.Middleware(dependencies.IdentityResolver))
+	if dependencies.ModelUsage != nil {
+		api.Use(usageScope(dependencies.ModelUsage))
+		registerModelUsage(api, dependencies.ModelUsage)
+	}
 	if dependencies.MutationLocker != nil {
 		api.Use(serializeUserMutations(dependencies.MutationLocker))
 	}

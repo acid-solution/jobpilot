@@ -26,6 +26,7 @@ func (s *Service) runner(ctx context.Context, user, conversation uuid.UUID, scop
 	}
 	model, err := deepseekmodel.NewChatModel(ctx, &deepseekmodel.ChatModelConfig{
 		APIKey: credentials.APIKey, Model: modelName, BaseURL: s.DeepSeekBaseURL, Timeout: 3 * time.Minute, MaxTokens: 4096,
+		HTTPClient: s.ModelHTTP,
 	})
 	if err != nil {
 		return nil, err

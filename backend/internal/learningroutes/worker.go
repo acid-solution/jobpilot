@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
@@ -45,6 +46,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	work, cancel := context.WithCancel(ctx)
+	work = modelusage.For(modelusage.Resource(work, job.TargetID, job.RouteID), job.UserID, job.ID, "learning_route", "user")
 	defer cancel()
 	hb, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)

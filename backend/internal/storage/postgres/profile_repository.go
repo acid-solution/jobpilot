@@ -441,7 +441,10 @@ func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UU
 }
 
 func (r *ProfileRepository) CreateSession(ctx context.Context, userID uuid.UUID, value profile.Session) (profile.Session, error) {
-	id := uuid.New()
+	id := value.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
 	questions, err := json.Marshal(value.Questions)
 	if err != nil {
 		return profile.Session{}, err

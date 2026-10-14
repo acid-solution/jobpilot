@@ -92,3 +92,28 @@ docker compose --env-file .env.joint -f compose.yaml -f compose.joint.yaml down
 - 单项目和联合部署密钥生成、权限与幂等测试通过。
 
 入口测试使用临时 HTTP 站点和测试邮件凭证，没有发送真实邮件。正式 TLS、真实邮件及带用户授权的 HTTPS 路线导入尚需在实际服务器验收。
+# HTTP 联调（不申请 TLS 证书）
+
+HTTPS 正式部署保持默认配置。需要 HTTP 联调时，在独立环境文件中设置：
+
+```dotenv
+PUBLIC_ORIGIN=http://127.0.0.1:18080
+STUDYFLOW_WEB_URL=http://127.0.0.1:18084
+STUDYFLOW_MCP_URL=http://studyflow:8081/mcp
+```
+
+沿用上面的密钥生成和邮件配置步骤，启动时叠加第三份配置（Docker Compose 2.24.4 及以上）：
+
+```bash
+docker compose --env-file .env.joint -f compose.yaml -f compose.joint.yaml -f compose.joint.http-test.yaml up -d --build
+```
+
+该覆盖配置启用 `ALLOW_INSECURE_ROUTE_HTTP`、关闭 Cookie Secure，Caddy 按两个端口提供 HTTP；令牌交换和 MCP 导入通过容器内网调用。MCP 地址必须在 JobPilot、shared-auth 和 StudyFlow 三处保持一致。默认仅监听服务器本机的 18080 和 18084，通过 SSH 转发到电脑同名端口测试：
+
+```bash
+ssh -N -L 18080:127.0.0.1:18080 -L 18084:127.0.0.1:18084 user@server
+```
+
+浏览器分别打开 `http://127.0.0.1:18080` 和 `http://127.0.0.1:18084`。端口或访问地址变化时，两项浏览器 URL、转发端口和允许的 Origin 都应同步调整。两个站点共用主机时 Cookie 不按端口隔离；现有认证仍按各自客户端区分。
+
+HTTP 开关默认关闭，只放宽服务端配置的固定路线地址协议，不放宽账号、受众、权限、摘要、幂等键和禁止重定向校验。它不影响 DeepSeek、百炼和邮件供应商原有的 HTTPS 调用。明文 HTTP 不适合真实账号、真实个人资料或模型 Key；大陆首次备案通过前不要对外开放网站。恢复正式配置时取消第三份覆盖文件，保持 `ALLOW_INSECURE_ROUTE_HTTP=false`、`COOKIE_SECURE=true` 及 HTTPS 网站地址。

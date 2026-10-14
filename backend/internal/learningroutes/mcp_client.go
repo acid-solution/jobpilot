@@ -20,19 +20,19 @@ type MCPClient struct {
 	HTTP                                 *http.Client
 }
 
-func NewMCPClient(exchange, secret, endpoint string) (*MCPClient, error) {
+func NewMCPClient(exchange, secret, endpoint string, allowHTTP ...bool) (*MCPClient, error) {
 	c := &MCPClient{ExchangeURL: exchange, ServiceSecret: secret, Endpoint: endpoint, HTTP: &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if exchange == "" && secret == "" && endpoint == "" {
 		return c, nil
 	}
-	if len(secret) < 32 || !safeServiceURL(exchange) || !safeServiceURL(endpoint) {
+	if len(secret) < 32 || !safeServiceURL(exchange, allowHTTP...) || !safeServiceURL(endpoint, allowHTTP...) {
 		return nil, fmt.Errorf("invalid learning route integration configuration")
 	}
 	return c, nil
 }
-func safeServiceURL(raw string) bool {
+func safeServiceURL(raw string, allowHTTP ...bool) bool {
 	u, e := url.Parse(raw)
-	return e == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Scheme == "https" || (u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost")))
+	return e == nil && u.Hostname() != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && (u.Scheme == "https" || (u.Scheme == "http" && ((len(allowHTTP) > 0 && allowHTTP[0]) || u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost")))
 }
 func (c *MCPClient) Enabled() bool {
 	return c.Endpoint != "" && c.ServiceSecret != "" && c.ExchangeURL != ""

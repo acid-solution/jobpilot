@@ -6,8 +6,8 @@ services:
 
   api:
     environment:
-      # The client validates HTTPS (or loopback HTTP) before sending credentials.
-      AUTH_EXCHANGE_URL: ${PUBLIC_ORIGIN}/auth/v1/token/exchange
+      # HTTPS by default; explicit HTTP testing is controlled by the opt-in flag.
+      AUTH_EXCHANGE_URL: ${AUTH_EXCHANGE_URL:-${PUBLIC_ORIGIN}/auth/v1/token/exchange}
 
   mysql:
     image: mysql:8.4.10

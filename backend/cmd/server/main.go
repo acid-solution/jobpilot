@@ -125,7 +125,7 @@ func run() error {
 	var learningAPI httpapi.LearningRoutesService
 	var learningWorker *learningroutes.Worker
 	if configuration.LearningRoutesEnabled {
-		remote, e := learningroutes.NewMCPClient(configuration.AuthExchangeURL, configuration.JobPilotExchangeSecret, configuration.StudyFlowMCPURL)
+		remote, e := learningroutes.NewMCPClient(configuration.AuthExchangeURL, configuration.JobPilotExchangeSecret, configuration.StudyFlowMCPURL, configuration.AllowInsecureRouteHTTP)
 		if e != nil {
 			return e
 		}

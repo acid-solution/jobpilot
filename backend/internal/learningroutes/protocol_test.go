@@ -40,3 +40,22 @@ func TestIntegrationEndpointsNeverRedirectCredentialsToArbitraryHTTP(t *testing.
 		}
 	}
 }
+
+func TestHTTPIntegrationRequiresExplicitOptIn(t *testing.T) {
+	endpoint := "http://192.0.2.1:18084/mcp"
+	if safeServiceURL(endpoint) || safeServiceURL(endpoint, false) {
+		t.Fatal("HTTP accepted without opt-in")
+	}
+	if !safeServiceURL(endpoint, true) || !safeServiceURL("http://auth:18082/auth/v1/token/exchange", true) {
+		t.Fatal("explicit HTTP test endpoint rejected")
+	}
+	for _, raw := range []string{"http://user:secret@example.com/mcp", "http://example.com/mcp?key=x", "http://example.com/mcp#fragment", "ftp://example.com/mcp", "http://:80/mcp"} {
+		if safeServiceURL(raw, true) {
+			t.Fatal("opt-in bypassed URL structure checks", raw)
+		}
+	}
+	client, err := NewMCPClient("http://auth:18082/auth/v1/token/exchange", "12345678901234567890123456789012", endpoint, true)
+	if err != nil || !client.Enabled() {
+		t.Fatal("HTTP test configuration rejected", err)
+	}
+}

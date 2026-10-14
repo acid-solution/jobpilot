@@ -13,6 +13,23 @@ func testValues() configValues {
 	}
 }
 
+func TestRouteHTTPOptInConfiguration(t *testing.T) {
+	values := testValues()
+	cfg, err := parse(values)
+	if err != nil || cfg.AllowInsecureRouteHTTP {
+		t.Fatal("HTTP opt-in must default to false", err)
+	}
+	values["ALLOW_INSECURE_ROUTE_HTTP"] = "true"
+	cfg, err = parse(values)
+	if err != nil || !cfg.AllowInsecureRouteHTTP {
+		t.Fatal("HTTP opt-in not loaded", err)
+	}
+	values["ALLOW_INSECURE_ROUTE_HTTP"] = "typo"
+	if _, err = parse(values); err == nil {
+		t.Fatal("invalid HTTP flag accepted")
+	}
+}
+
 func TestFrontendDirectoryIsOptional(t *testing.T) {
 	values := testValues()
 	cfg, err := parse(values)

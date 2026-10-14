@@ -72,6 +72,7 @@ services:
       JOBPILOT_ROUTE_EXCHANGE_ENABLED: ${LEARNING_ROUTES_ENABLED:-false}
       JOBPILOT_EXCHANGE_SECRET: ${JOBPILOT_EXCHANGE_SECRET:-}
       STUDYFLOW_MCP_RESOURCE: ${STUDYFLOW_MCP_URL:-}
+      ALLOW_INSECURE_ROUTE_HTTP: ${ALLOW_INSECURE_ROUTE_HTTP:-false}
     entrypoint: ["/bin/sh", "/etc/jobpilot/auth-entrypoint.sh"]
     volumes:
       - auth-keys:/keys:ro
@@ -128,6 +129,7 @@ services:
 
       # 学习路线依赖 StudyFlow 的 MCP 服务和令牌交换，三项齐全后才启用。
       LEARNING_ROUTES_ENABLED: ${LEARNING_ROUTES_ENABLED:-false}
+      ALLOW_INSECURE_ROUTE_HTTP: ${ALLOW_INSECURE_ROUTE_HTTP:-false}
       STUDYFLOW_MCP_URL: ${STUDYFLOW_MCP_URL:-}
       AUTH_EXCHANGE_URL: ${AUTH_EXCHANGE_URL:-http://auth:18082/auth/v1/token/exchange}
       JOBPILOT_EXCHANGE_SECRET: ${JOBPILOT_EXCHANGE_SECRET:-}

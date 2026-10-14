@@ -1,0 +1,18 @@
+# Apply after compose.yaml and compose.joint.yaml. Requires Compose >= 2.24.4.
+# Bind to loopback by default: use an SSH tunnel for remote testing.
+services:
+  auth:
+    environment:
+      ALLOW_INSECURE_ROUTE_HTTP: "true"
+      COOKIE_SECURE: "false"
+  api:
+    environment:
+      ALLOW_INSECURE_ROUTE_HTTP: "true"
+      AUTH_EXCHANGE_URL: http://auth:18082/auth/v1/token/exchange
+  web:
+    environment:
+      SITE_ADDRESS: ":80"
+      STUDYFLOW_SITE_ADDRESS: ":8080"
+    ports: !override
+      - "${HTTP_TEST_BIND:-127.0.0.1}:${HTTP_TEST_JOBPILOT_PORT:-18080}:80"
+      - "${HTTP_TEST_BIND:-127.0.0.1}:${HTTP_TEST_STUDYFLOW_PORT:-18084}:8080"

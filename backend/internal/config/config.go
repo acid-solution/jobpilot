@@ -17,6 +17,7 @@ type Config struct {
 	FrontendDistDir                string
 	ModelPricingFile               string
 	LearningRoutesEnabled          bool
+	AllowInsecureRouteHTTP         bool
 	StudyFlowMCPURL                string
 	StudyFlowWebURL                string
 	AuthExchangeURL                string
@@ -77,6 +78,10 @@ func loadValues(path string) (configValues, error) {
 }
 
 func parse(values configValues) (Config, error) {
+	allowRouteHTTP, err := strconv.ParseBool(values.valueOrDefault("ALLOW_INSECURE_ROUTE_HTTP", "false"))
+	if err != nil {
+		return Config{}, errors.New("ALLOW_INSECURE_ROUTE_HTTP must be true or false")
+	}
 	learningRoutesEnabled, err := strconv.ParseBool(values.valueOrDefault("LEARNING_ROUTES_ENABLED", "false"))
 	if err != nil {
 		return Config{}, errors.New("LEARNING_ROUTES_ENABLED must be true or false")
@@ -148,6 +153,7 @@ func parse(values configValues) (Config, error) {
 		DatabaseURL:                    databaseURL,
 		AuthMode:                       authMode,
 		LearningRoutesEnabled:          learningRoutesEnabled,
+		AllowInsecureRouteHTTP:         allowRouteHTTP,
 		StudyFlowMCPURL:                values["STUDYFLOW_MCP_URL"],
 		StudyFlowWebURL:                values.valueOrDefault("STUDYFLOW_WEB_URL", "http://127.0.0.1:5174"),
 		AuthExchangeURL:                values["AUTH_EXCHANGE_URL"],

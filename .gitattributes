@@ -1,0 +1,9 @@
+# 部署脚本和容器配置必须保持 LF：CRLF 会让服务器上的 shell 脚本报错，
+# 也会污染 Caddyfile 和 Dockerfile 的指令解析。
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.dockerignore text eol=lf
+Caddyfile text eol=lf
+compose.yaml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

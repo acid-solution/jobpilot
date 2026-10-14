@@ -1,0 +1,4 @@
+# 部署时的本地状态，不进仓库。
+.env
+.env.tmp
+model-pricing.json

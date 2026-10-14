@@ -1,0 +1,61 @@
+# JobPilot 反向代理。
+#
+# 前端与 API 同源：浏览器只访问 SITE_ADDRESS 一个来源，Caddy 按路径把请求分发出去。
+# 后端没有任何 CORS 中间件，同源是它唯一能工作的部署方式，不要拆成两个域名。
+#
+# SITE_ADDRESS 决定是否启用 HTTPS：
+#   - 域名，例如 jobpilot.example.com   → 自动申请 Let's Encrypt 证书，80 端口自动跳 443
+#   - :80 或 http://<公网IP>            → 纯 HTTP，用于没有域名的 IP 直连场景
+#
+# 关于 Let's Encrypt 到期通知邮件：需要时在下面 global 块里加一行 email，例如
+#   email you@example.com
+# 这里默认不写，因为空值会让 Caddy 启动时报参数错误。
+
+{
+	admin off
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	log {
+		output stdout
+		format console
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# shared-auth 的开发收件箱接口。它会返回任意邮箱的验证码且不需要登录，
+	# 只允许在本机开发时使用，公网一律不转发。
+	handle /dev/* {
+		respond "Not Found" 404
+	}
+
+	handle /health/* {
+		reverse_proxy api:18081
+	}
+
+	# 刷新令牌 Cookie 的作用域是 /auth，必须和 shared-auth 的 Set-Cookie 路径一致。
+	handle /auth/* {
+		reverse_proxy auth:18082
+	}
+
+	# Agent 对话走 SSE，必须关闭响应缓冲，否则流式输出会被攒成一整块。
+	handle /api/* {
+		reverse_proxy api:18081 {
+			flush_interval -1
+		}
+	}
+
+	# 单页应用回退：静态文件命中就返回文件，否则返回 index.html 交给前端路由。
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

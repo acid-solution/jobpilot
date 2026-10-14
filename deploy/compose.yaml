@@ -1,0 +1,166 @@
+# JobPilot 单机部署栈。
+#
+# 组成：Caddy（静态文件 + 反向代理 + TLS）、JobPilot API、shared-auth、PostgreSQL + pgvector。
+# 所有服务只在内网互通，对外只暴露 web 容器的端口。
+#
+# 使用方式见同目录 README.md。变量定义见 .env.example。
+
+# 项目名不要用 jobpilot：旧版 jobpilot 仓库的 compose 会占用同名项目和同名数据卷，
+# 在同一台机器上同时部署会互相覆盖。
+name: jobpilot-stack
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jobpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置，请先执行 generate-secrets.sh}
+      POSTGRES_DB: ${POSTGRES_DB:-jobpilot}
+      # 初始化脚本按这个变量创建 shared-auth 的账号库。
+      AUTH_DB_NAME: ${AUTH_DB_NAME:-shared_auth}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobpilot} -d ${POSTGRES_DB:-jobpilot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [stack]
+
+  # 只在首次启动时生成 RSA 私钥写入命名卷；密钥已存在时会直接跳过。
+  auth-keygen:
+    build:
+      context: ${SHARED_AUTH_CONTEXT:-../../shared-auth}
+    entrypoint: ["/app/keygen"]
+    command: ["-out", "/keys/private.pem"]
+    volumes:
+      - auth-keys:/keys
+    networks: [stack]
+
+  auth:
+    build:
+      context: ${SHARED_AUTH_CONTEXT:-../../shared-auth}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-keygen:
+        condition: service_completed_successfully
+    environment:
+      # 用 staging 而不是 production：见 README「邮件与注册」一节。
+      # 启用真实邮件后改成 production，并把 COOKIE_SECURE 改成 true。
+      APP_ENV: ${AUTH_APP_ENV:-staging}
+      GIN_MODE: release
+      HTTP_ADDR: ":18082"
+      DATABASE_URL: postgres://${POSTGRES_USER:-jobpilot}:${POSTGRES_PASSWORD}@postgres:5432/${AUTH_DB_NAME:-shared_auth}?sslmode=disable
+      JWT_PRIVATE_KEY_PATH: /keys/private.pem
+      JWT_KEY_ID: ${JWT_KEY_ID:-jobpilot-1}
+      JWT_ISSUER: shared-auth
+      VERIFICATION_HMAC_KEY: ${VERIFICATION_HMAC_KEY:?VERIFICATION_HMAC_KEY 未设置，请先执行 generate-secrets.sh}
+      BCRYPT_COST: "12"
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DEV_OUTBOX_ENABLED: ${DEV_OUTBOX_ENABLED:-true}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-dev}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      # 必须与浏览器实际访问的地址逐字符一致，否则登录会被拒绝。
+      JOBPILOT_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN 未设置}
+      STUDYFLOW_ALLOWED_ORIGINS: ${STUDYFLOW_ALLOWED_ORIGINS:-}
+    volumes:
+      - auth-keys:/keys:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18082/health/ready >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [stack]
+
+  api:
+    build:
+      context: ../backend
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      HTTP_ADDR: "0.0.0.0:18081"
+      WORKER_COUNT: ${WORKER_COUNT:-2}
+      DATABASE_URL: postgres://${POSTGRES_USER:-jobpilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-jobpilot}?sslmode=disable
+
+      AUTH_MODE: shared
+      AUTH_JWKS_URL: http://auth:18082/.well-known/jwks.json
+      AUTH_ISSUER: shared-auth
+      AUTH_AUDIENCE: jobpilot
+
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?CREDENTIAL_ENCRYPTION_KEY 未设置，请先执行 generate-secrets.sh}
+
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      PLATFORM_DEEPSEEK_API_KEY: ${PLATFORM_DEEPSEEK_API_KEY:-}
+      PLATFORM_REVIEW_MODEL: ${PLATFORM_REVIEW_MODEL:-deepseek-chat}
+
+      EMBEDDING_ENABLED: ${EMBEDDING_ENABLED:-false}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      PLATFORM_EMBEDDING_API_KEY: ${PLATFORM_EMBEDDING_API_KEY:-}
+
+      AGENT_ENABLED: ${AGENT_ENABLED:-true}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+
+      ABILITY_REVIEW_ENABLED: ${ABILITY_REVIEW_ENABLED:-false}
+      JD_ABILITY_GRADING_ENABLED: ${JD_ABILITY_GRADING_ENABLED:-false}
+      JOB_CLASSIFICATION_REVIEW_ENABLED: ${JOB_CLASSIFICATION_REVIEW_ENABLED:-false}
+      ABILITY_REVIEW_USER_DAILY_LIMIT: ${ABILITY_REVIEW_USER_DAILY_LIMIT:-3}
+      ABILITY_REVIEW_GLOBAL_DAILY_LIMIT: ${ABILITY_REVIEW_GLOBAL_DAILY_LIMIT:-30}
+
+      # 学习路线依赖 StudyFlow 的 MCP 服务和令牌交换，三项齐全后才启用。
+      LEARNING_ROUTES_ENABLED: ${LEARNING_ROUTES_ENABLED:-false}
+      STUDYFLOW_MCP_URL: ${STUDYFLOW_MCP_URL:-}
+      AUTH_EXCHANGE_URL: ${AUTH_EXCHANGE_URL:-}
+      JOBPILOT_EXCHANGE_SECRET: ${JOBPILOT_EXCHANGE_SECRET:-}
+      STUDYFLOW_WEB_URL: ${STUDYFLOW_WEB_URL:-}
+
+      MODEL_PRICING_FILE: ${MODEL_PRICING_FILE:-}
+    volumes:
+      # 需要版本化模型单价时，把 JSON 放进 deploy/model-pricing.json 并设置 MODEL_PRICING_FILE=/app/config/model-pricing.json
+      - ./config:/app/config:ro
+    networks: [stack]
+
+  web:
+    build:
+      context: ../frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com/}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+      auth:
+        condition: service_healthy
+    environment:
+      # 域名走自动 HTTPS；填 :80 或 http://<IP> 则为纯 HTTP。
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS 未设置}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [stack]
+
+networks:
+  # 固定名称，后续 StudyFlow 栈可以把它作为 external 网络接入，复用同一个 shared-auth 和 PostgreSQL。
+  stack:
+    name: jobpilot-stack
+
+volumes:
+  postgres-data:
+  auth-keys:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,15 @@
+# 构建期排除本地配置和产物，避免 .env.local 里的真实密钥被写进镜像层。
+.env
+.env.*
+!.env.example
+.dev-secrets.ps1
+.gocache/
+.go-cache/
+*.log
+*.out
+*.err
+*.exe
+*.tsbuildinfo
+.git/
+.gitignore
+README.md

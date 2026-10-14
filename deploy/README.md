@@ -34,9 +34,9 @@ Docker 和镜像加速可以交给 `bootstrap-server.sh`：
 sudo bash bootstrap-server.sh
 ```
 
-它做三件事：安装 Docker、写入 `/etc/docker/daemon.json` 配置国内镜像源、把三个仓库克隆到 `/srv/jobpilot-stack`。
+它安装所需工具、准备 Docker 配置，并把三个仓库克隆到 `/srv/jobpilot-stack`。已有 `daemon.json` 会保留，已有运行中的 Docker 不会被自动重启；如需加载新配置，请在维护时间手动重启。
 
-> 镜像加速是必需的。阿里云 ECS 直连 Docker Hub 拉取镜像经常超时，`bootstrap-server.sh` 默认用 `docker.m.daocloud.io`。更快的做法是登录阿里云容器镜像服务控制台获取你的专属加速地址，再改 `/etc/docker/daemon.json`。
+> 如果 Docker Hub 拉取失败，可以配置可用的镜像加速地址。脚本仅在没有现有 Docker 配置时创建默认加速配置；不保证任一公共镜像源始终可用。
 
 ---
 
@@ -63,7 +63,7 @@ cp .env.example .env
 bash generate-secrets.sh
 ```
 
-`generate-secrets.sh` 会生成四组随机密钥写入 `.env`（口令用 hex，可以直接拼进数据库连接串；另三项是程序要求的 Base64 32 字节）。它只替换仍是 `__GENERATE__` 的项，可以重复执行。
+`generate-secrets.sh` 生成数据库口令、验证码 HMAC、资料加密密钥及服务交换凭证，设置 `.env` 权限为 `600`，不打印密钥。它只替换 `__GENERATE__`，保留已有值；不要用新密钥覆盖已有数据库的加密密钥。
 
 然后编辑 `.env`，至少确认这几项：
 
@@ -72,6 +72,8 @@ bash generate-secrets.sh
 | `PUBLIC_ORIGIN` | 浏览器实际访问的地址，**必须逐字符匹配**，否则登录会被拒绝 |
 | `SITE_ADDRESS` | Caddy 的站点地址，决定是否启用 HTTPS |
 | `COOKIE_SECURE` | 有 HTTPS 填 `true`，纯 HTTP 必须 `false` |
+| `RESEND_API_KEY` | 必填，Resend 服务端邮件发送 Key |
+| `RESEND_FROM` | 必填，已通过 Resend 域名验证的发件地址，例如 `JobPilot <verify@your-domain.com>` |
 | `PLATFORM_DEEPSEEK_API_KEY` | 平台侧 DeepSeek Key，用于分类审核和判级 |
 | `EMBEDDING_ENABLED` / `PLATFORM_EMBEDDING_API_KEY` | 百炼 Embedding，不用可以保持关闭 |
 
@@ -82,7 +84,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-首次构建会拉取 Go 模块和 npm 依赖，几分钟属正常。全部 `healthy` 后打开 `PUBLIC_ORIGIN` 即可。
+首次构建会拉取 Go 模块和 npm 依赖。postgres、auth、api 应为 `healthy`，auth-keygen 应以状态 0 退出，web 应为运行中；再打开 `PUBLIC_ORIGIN`。缺少邮件凭证时 auth 会报错退出，不会退回开发邮件模式。
 
 ---
 
@@ -111,33 +113,37 @@ COOKIE_SECURE=false
 HTTP_PORT=80
 ```
 
-这条路免掉了备案，但拿不到证书，只能走 HTTP。两个后果要接受：
+上述配置使用纯 HTTP，需要同步将 `COOKIE_SECURE` 改为 `false`。它与默认的域名 HTTPS 部署不同：
 
 1. 浏览器地址栏会显示「不安全」。
 2. `COOKIE_SECURE` 必须是 `false`。带 `Secure` 标志的 Cookie 在 HTTP 下浏览器不会保存，刷新令牌会失效，表现为登录后一刷新就掉线。
 
-如果云厂商对未备案的 80 端口有拦截，把 `HTTP_PORT` 改成 `8080`，同时把 `PUBLIC_ORIGIN` 改成 `http://<公网IP>:8080`（端口必须一致）。
+如使用非标准端口，把 `HTTP_PORT` 改成对应端口，同时更新 `PUBLIC_ORIGIN`（例如 `http://<公网IP>:8080`）。云厂商的端口与备案要求请按实际部署地域核对，修改端口不保证能绕过限制。
 
 ---
 
 ## 5. 邮件与注册
 
-shared-auth 的配置校验把 `APP_ENV` 和 `EMAIL_PROVIDER` 绑在一起，只有两种可用组合：
+默认使用真实邮件验证码：
 
-| 组合 | 效果 |
-| --- | --- |
-| `AUTH_APP_ENV=staging` + `EMAIL_PROVIDER=dev` | 演示模式。验证码不投递到真实邮箱，写入内存收件箱，而该接口被 Caddy 挡在 `/dev/*` 之外。**结果是注册无法自助完成**，只能用预置账号登录。 |
-| `AUTH_APP_ENV=production` + `EMAIL_PROVIDER=resend` | 真实邮件。需要自有域名配置 DKIM/SPF，并提供 Resend 凭证，同时把 `COOKIE_SECURE` 改成 `true`。 |
+```dotenv
+AUTH_APP_ENV=production
+EMAIL_PROVIDER=resend
+DEV_OUTBOX_ENABLED=false
+COOKIE_SECURE=true
+RESEND_API_KEY=你的服务端邮件发送Key
+RESEND_FROM="JobPilot <verify@your-domain.com>"
+```
 
-默认给的是第一种。它适合「自己演示 + 少量人试用」，代价是无法自助注册。
+先在 Resend 验证自己的发件域名，填写它提供的 DNS 记录，再设置 Key 与发件地址。服务不会自动申请 Key，也不会把验证码打印到公网日志。仅填写示例地址不能保证真实投递。
 
-预置账号的做法：用 IP 直连或域名打开站点前，先在服务器上执行一次注册流程并读取验证码——验证码只在容器内可见：
+如果明确需要本地演示，可手动设置 `AUTH_APP_ENV=staging`、`EMAIL_PROVIDER=dev`、`DEV_OUTBOX_ENABLED=true`；此时不发送真实邮件，`/dev/*` 仍不会对公网开放。先请求验证码，再从容器内读取：
 
 ```bash
 docker compose exec auth wget -qO- "http://127.0.0.1:18082/dev/outbox?identifier=你的邮箱"
 ```
 
-把拿到的 6 位码填进注册页面即可。
+拿到验证码后填入注册页面。开发收件箱不适合公开站点自助注册。
 
 `EMAIL_PROVIDER=resend` 需要 `RESEND_API_KEY` 和 `RESEND_FROM`，且 `RESEND_FROM` 的域名必须已完成 Resend 侧验证。
 
@@ -149,7 +155,7 @@ docker compose exec auth wget -qO- "http://127.0.0.1:18082/dev/outbox?identifier
 docker compose ps                      # 状态
 docker compose logs -f api             # 后端日志
 docker compose logs -f web             # 访问日志
-docker compose restart api             # 改完 .env 后重启对应服务
+docker compose up -d                  # 改完 .env：重建受影响容器，加载新环境变量
 docker compose up -d --build api web   # 代码更新后重建
 docker compose down                    # 停止，保留数据卷
 ```
@@ -167,19 +173,20 @@ docker compose exec -T postgres pg_dump -U jobpilot shared_auth | gzip > shared_
 
 ## 7. 已知约束
 
-- **数据库口令只在首次初始化时生效**。PostgreSQL 的数据卷一旦建立，改 `POSTGRES_PASSWORD` 不会更新已有用户的口令，auth 和 api 会持续认证失败。要改口令必须先把数据导出、删除数据卷、改完再导入。
+- **数据库口令只在首次初始化时生效**。已有数据卷不能只改 `.env`。先通过 `docker compose exec postgres psql -U jobpilot -d postgres` 进入数据库，用 `\password jobpilot` 修改角色密码，再同步 `.env` 的 `POSTGRES_PASSWORD`，运行 `docker compose up -d`。自定义用户名时替换 `jobpilot`。不需要删除数据卷，已有数据和资料加密密钥保持不变。
+- 数据库连接串使用配置口令，生成器默认生成 hex 口令以避免 URL 保留字符；手动更换时使用同类口令，不直接填入带 `@`、`:`、`/` 等字符的值。
 - **项目名固定为 `jobpilot-stack`**，不要改成 `jobpilot`。旧版 JobPilot 仓库的 compose 会占用同名项目和同名数据卷，同一台机器上同时部署会互相覆盖。
 - `MODEL_PRICING_FILE` 留空时仍然记录 token 用量，只是费用显示为未知。需要显示费用就把 JSON 放到 `deploy/config/` 并设成 `/app/config/model-pricing.json`。
-- 学习路线相关开关默认关闭。它依赖 StudyFlow 的 MCP 服务和令牌交换，三项配置齐全后才能启用。
+- 学习路线默认关闭。开启时配置 `LEARNING_ROUTES_ENABLED=true`、`STUDYFLOW_MCP_URL` 和 `STUDYFLOW_WEB_URL`。生成的 `JOBPILOT_EXCHANGE_SECRET` 会同时传给 API 和 auth；`AUTH_EXCHANGE_URL` 留空默认使用内网认证地址。`STUDYFLOW_MCP_URL` 同时传为 auth 的令牌受众，必须与 StudyFlow 的 `STUDYFLOW_MCP_RESOURCE` 一致，正式部署使用 HTTPS。关闭学习路线时不启用交换服务；开启但配置缺失时明确报错。
 - 首次启动时 `postgres-init/01-create-databases.sh` 会创建 `shared_auth` 库和 `vector` 扩展。**它只在数据卷为空时执行**，中途修改不会补跑。
-- 后续部署 StudyFlow 时，把它的 compose 接入 `jobpilot-stack` 这个外部网络，复用同一套 shared-auth 和 PostgreSQL，不要另起一套认证服务。
+- 后续部署 StudyFlow 时可接入 `jobpilot-stack` 网络并复用 shared-auth。StudyFlow 业务库目前使用 MySQL，不能直接复用 JobPilot 的 PostgreSQL 业务库；其数据库、Redis 和 MCP 仍需按 StudyFlow 的部署文档配置。
 - **服务器访问 github.com 可能不稳定**。`bootstrap-server.sh` 用 `git clone --depth 1` 只取最新一次提交，能减少传输量；如果仍然失败，就在本地克隆后 `scp` 上传，或把脚本里的 `GITHUB_BASE` 换成可用的镜像地址。三个仓库都是公开的，不需要任何凭证。
 
 ---
 
 ## 8. 本地验证记录
 
-2026-10-14 在一台 Windows 机器上用 Docker 完整跑通过一次，验证项和结果：
+2026-10-14 初版曾使用演示邮件模式验证完整栈，下表为该次记录。当前默认改为真实邮件；新增部署脚本隔离测试覆盖密钥权限和幂等生成、保留已有 Docker 配置、认证交换开关与数据库口令占位符保护。真实邮件投递仍需填入有效 Resend 凭证后验证，不以测试凭证的启动成功代替投递验收。
 
 | 验证项 | 结果 |
 | --- | --- |
@@ -197,3 +204,12 @@ docker compose exec -T postgres pg_dump -U jobpilot shared_auth | gzip > shared_
 | 安全响应头 | `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 均已下发，`Server` 已隐藏 |
 
 验证时用的是国内镜像源（`docker.m.daocloud.io`、`goproxy.cn`、`registry.npmmirror.com`），所以 Dockerfile 里的默认值就是按国内网络环境设的。
+
+部署脚本可以在临时、无网络容器中测试（在 `deploy` 目录运行）：
+
+```bash
+docker run --rm --network none -v "$PWD:/source:ro" \
+  --entrypoint bash pgvector/pgvector:0.8.6-pg17 /source/test-deployment.sh
+```
+
+本次修正使用独立测试项目和测试邮件凭证验证了 production/resend 模式启动：数据库、认证与 API 健康，首页和 `/health/ready` 正常，公网开发收件箱返回 404。测试没有发送真实邮件，没有替换本机原有网站。

@@ -26,23 +26,32 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 echo "==> 1/3 安装 Docker"
+apt-get update
+apt-get install -y ca-certificates curl git openssl
+installed_docker=false
 if command -v docker >/dev/null 2>&1; then
 	echo "Docker 已安装：$(docker --version)"
 else
-	apt-get update
-	apt-get install -y ca-certificates curl git
 	# 官方安装脚本的阿里云镜像。脚本内容会执行到系统上，执行前建议先自行确认。
 	curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
 	sh /tmp/get-docker.sh --mirror Aliyun
+	installed_docker=true
+fi
+if ! docker compose version >/dev/null 2>&1; then
+	echo "缺少 Docker Compose 插件，请安装后重新运行" >&2
+	exit 1
 fi
 
 echo "==> 2/3 配置镜像加速"
 mkdir -p /etc/docker
 if [ -f /etc/docker/daemon.json ]; then
-	cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)"
-	echo "已备份原有 /etc/docker/daemon.json"
-fi
-cat >/etc/docker/daemon.json <<EOF
+	echo "保留现有 daemon.json；镜像加速及日志配置不作覆盖"
+else
+	if [[ ! "$REGISTRY_MIRROR" =~ ^[a-zA-Z0-9.:-]+$ ]]; then
+		echo "REGISTRY_MIRROR 应为镜像源主机名，可带端口，不含协议或路径" >&2
+		exit 1
+	fi
+	cat >/etc/docker/daemon.json <<EOF
 {
   "registry-mirrors": ["https://${REGISTRY_MIRROR}"],
   "log-driver": "json-file",
@@ -52,9 +61,15 @@ cat >/etc/docker/daemon.json <<EOF
   }
 }
 EOF
+	chmod 644 /etc/docker/daemon.json
+	echo "已创建 Docker 配置；现有 Docker 如需立即加载，请自行选择维护时间重启"
+fi
 systemctl enable docker
-systemctl restart docker
-echo "镜像加速已指向 ${REGISTRY_MIRROR}"
+if [ "$installed_docker" = true ]; then
+	systemctl restart docker
+elif ! systemctl is-active --quiet docker; then
+	systemctl start docker
+fi
 echo "提示：登录阿里云容器镜像服务控制台可以拿到专属加速地址，换成它通常更快。"
 
 echo "==> 3/3 准备代码目录 ${STACK_DIR}"
@@ -80,7 +95,7 @@ cat <<EOF
   cd ${STACK_DIR}/jobpilot/deploy
   cp .env.example .env
   bash generate-secrets.sh
-  # 编辑 .env：填好 PUBLIC_ORIGIN、SITE_ADDRESS、COOKIE_SECURE 和模型 Key
+  # 编辑 .env：填好域名、RESEND_API_KEY、RESEND_FROM 和所需模型 Key
   docker compose up -d --build
 
 详细说明见 ${STACK_DIR}/jobpilot/deploy/README.md

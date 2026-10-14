@@ -13,6 +13,8 @@ services:
   postgres:
     image: pgvector/pgvector:0.8.6-pg17
     restart: unless-stopped
+    entrypoint: ["/bin/bash", "/etc/jobpilot/postgres-entrypoint.sh"]
+    command: ["postgres"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-jobpilot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置，请先执行 generate-secrets.sh}
@@ -22,6 +24,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./postgres-entrypoint.sh:/etc/jobpilot/postgres-entrypoint.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobpilot} -d ${POSTGRES_DB:-jobpilot}"]
       interval: 5s
@@ -49,9 +52,7 @@ services:
       auth-keygen:
         condition: service_completed_successfully
     environment:
-      # 用 staging 而不是 production：见 README「邮件与注册」一节。
-      # 启用真实邮件后改成 production，并把 COOKIE_SECURE 改成 true。
-      APP_ENV: ${AUTH_APP_ENV:-staging}
+      APP_ENV: ${AUTH_APP_ENV:-production}
       GIN_MODE: release
       HTTP_ADDR: ":18082"
       DATABASE_URL: postgres://${POSTGRES_USER:-jobpilot}:${POSTGRES_PASSWORD}@postgres:5432/${AUTH_DB_NAME:-shared_auth}?sslmode=disable
@@ -60,16 +61,21 @@ services:
       JWT_ISSUER: shared-auth
       VERIFICATION_HMAC_KEY: ${VERIFICATION_HMAC_KEY:?VERIFICATION_HMAC_KEY 未设置，请先执行 generate-secrets.sh}
       BCRYPT_COST: "12"
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      DEV_OUTBOX_ENABLED: ${DEV_OUTBOX_ENABLED:-true}
-      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-dev}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      DEV_OUTBOX_ENABLED: ${DEV_OUTBOX_ENABLED:-false}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-resend}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM: ${RESEND_FROM:-}
       # 必须与浏览器实际访问的地址逐字符一致，否则登录会被拒绝。
       JOBPILOT_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN 未设置}
       STUDYFLOW_ALLOWED_ORIGINS: ${STUDYFLOW_ALLOWED_ORIGINS:-}
+      JOBPILOT_ROUTE_EXCHANGE_ENABLED: ${LEARNING_ROUTES_ENABLED:-false}
+      JOBPILOT_EXCHANGE_SECRET: ${JOBPILOT_EXCHANGE_SECRET:-}
+      STUDYFLOW_MCP_RESOURCE: ${STUDYFLOW_MCP_URL:-}
+    entrypoint: ["/bin/sh", "/etc/jobpilot/auth-entrypoint.sh"]
     volumes:
       - auth-keys:/keys:ro
+      - ./auth-entrypoint.sh:/etc/jobpilot/auth-entrypoint.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:18082/health/ready >/dev/null"]
       interval: 5s
@@ -121,13 +127,13 @@ services:
       # 学习路线依赖 StudyFlow 的 MCP 服务和令牌交换，三项齐全后才启用。
       LEARNING_ROUTES_ENABLED: ${LEARNING_ROUTES_ENABLED:-false}
       STUDYFLOW_MCP_URL: ${STUDYFLOW_MCP_URL:-}
-      AUTH_EXCHANGE_URL: ${AUTH_EXCHANGE_URL:-}
+      AUTH_EXCHANGE_URL: ${AUTH_EXCHANGE_URL:-http://auth:18082/auth/v1/token/exchange}
       JOBPILOT_EXCHANGE_SECRET: ${JOBPILOT_EXCHANGE_SECRET:-}
       STUDYFLOW_WEB_URL: ${STUDYFLOW_WEB_URL:-}
 
       MODEL_PRICING_FILE: ${MODEL_PRICING_FILE:-}
     volumes:
-      # 需要版本化模型单价时，把 JSON 放进 deploy/model-pricing.json 并设置 MODEL_PRICING_FILE=/app/config/model-pricing.json
+      # 单价 JSON 放在 deploy/config/model-pricing.json。
       - ./config:/app/config:ro
     networks: [stack]
 
@@ -139,7 +145,7 @@ services:
     restart: unless-stopped
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
       auth:
         condition: service_healthy
     environment:

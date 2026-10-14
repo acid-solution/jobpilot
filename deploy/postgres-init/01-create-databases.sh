@@ -17,5 +17,9 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$APP_DB" \
 if [ "$AUTH_DB" != "$APP_DB" ]; then
 	echo "创建账号库：${AUTH_DB}"
 	psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$APP_DB" \
-		-c "CREATE DATABASE \"${AUTH_DB}\";"
+		--set=auth_db="$AUTH_DB" <<'SQL'
+SELECT format('CREATE DATABASE %I', :'auth_db')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'auth_db')
+\gexec
+SQL
 fi

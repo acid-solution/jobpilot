@@ -1,5 +1,7 @@
 # JobPilot 单机部署
 
+同时部署 StudyFlow 请使用 [联合部署说明](JOINT_DEPLOYMENT.md)，包括两网站、共享认证、MySQL、Redis 与 MCP。以下保留单独部署 JobPilot 的方式。
+
 一台 Linux 服务器上用 Docker Compose 跑起 JobPilot：Go 同时提供前端页面与 API，Caddy 提供 HTTPS 与转发，共享认证和数据库独立运行。
 
 ```

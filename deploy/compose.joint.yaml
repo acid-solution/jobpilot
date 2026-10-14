@@ -1,0 +1,92 @@
+# Use together with compose.yaml. Only Caddy exposes host ports.
+services:
+  auth:
+    environment:
+      STUDYFLOW_ALLOWED_ORIGINS: ${STUDYFLOW_WEB_URL:?请配置 StudyFlow 网站地址}
+
+  api:
+    environment:
+      # The client validates HTTPS (or loopback HTTP) before sending credentials.
+      AUTH_EXCHANGE_URL: ${PUBLIC_ORIGIN}/auth/v1/token/exchange
+
+  mysql:
+    image: mysql:8.4.10
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/etc/jobpilot/mysql-entrypoint.sh"]
+    command: ["mysqld"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请先生成 MySQL 密码}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-studyflow}
+      MYSQL_USER: ${MYSQL_USER:-studyflow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请先生成 MySQL 密码}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql-entrypoint.sh:/etc/jobpilot/mysql-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    networks: [stack]
+
+  redis:
+    image: redis:8.8.0-alpine3.23
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [stack]
+
+  studyflow:
+    build:
+      context: ${STUDYFLOW_CONTEXT:-../../studyflow}
+      args:
+        # Empty means relative, same-origin URLs. Never embed localhost URLs.
+        VITE_AUTH_URL: ""
+        VITE_API_URL: ""
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      APP_HOST: 0.0.0.0
+      MYSQL_DSN: ${MYSQL_USER:-studyflow}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE:-studyflow}?charset=utf8mb4&parseTime=True&loc=UTC
+      MIGRATIONS_DIR: migrations
+      AUTH_JWKS_URL: http://auth:18082/.well-known/jwks.json
+      AUTH_ISSUER: shared-auth
+      AUTH_AUDIENCE: studyflow
+      STUDYFLOW_MCP_RESOURCE: ${STUDYFLOW_MCP_URL:?请配置统一的 MCP 地址}
+      FRONTEND_URL: ${STUDYFLOW_WEB_URL}
+      CACHE_ENABLED: "true"
+      REDIS_ADDR: redis:6379
+      CACHE_TTL: 30s
+      NOTIFICATION_POLL_INTERVAL: 1s
+      NOTIFICATION_RETENTION: 168h
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8081/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [stack]
+
+  web:
+    environment:
+      STUDYFLOW_SITE_ADDRESS: ${STUDYFLOW_SITE_ADDRESS:?请配置 StudyFlow Caddy 站点}
+    volumes:
+      - ./Caddyfile.joint:/etc/caddy/Caddyfile:ro
+    depends_on:
+      studyflow:
+        condition: service_healthy
+
+volumes:
+  mysql-data:

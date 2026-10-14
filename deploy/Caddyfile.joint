@@ -1,0 +1,42 @@
+{
+ admin off
+}
+
+(shared_frontdoor) {
+ encode zstd gzip
+ log {
+  output stdout
+  format console
+ }
+ header {
+  -Server
+  X-Content-Type-Options "nosniff"
+  X-Frame-Options "DENY"
+  Referrer-Policy "strict-origin-when-cross-origin"
+ }
+ handle /dev/* {
+  respond "Not Found" 404
+ }
+ handle /auth/* {
+  reverse_proxy auth:18082
+ }
+}
+
+{$SITE_ADDRESS} {
+ import shared_frontdoor
+ handle {
+  reverse_proxy api:18081 {
+   flush_interval -1
+  }
+ }
+}
+
+{$STUDYFLOW_SITE_ADDRESS} {
+ import shared_frontdoor
+ handle {
+  # Includes frontend, API, MCP and notification SSE.
+  reverse_proxy studyflow:8081 {
+   flush_interval -1
+  }
+ }
+}

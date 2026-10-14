@@ -2,7 +2,8 @@
 # 生成部署所需的随机密钥并写入 deploy/.env。
 #
 # 用法（在 deploy 目录下）：
-#   bash generate-secrets.sh
+#   bash generate-secrets.sh              # 单项目
+#   bash generate-secrets.sh .env.joint   # 联合部署
 #
 # 只会替换 .env 里仍为 __GENERATE__ 的项，已填过的值不会被覆盖，可以重复执行。
 # 生成结果不会打印到终端，避免密钥进入日志或截图。
@@ -16,15 +17,16 @@ if ! command -v openssl >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [ -L .env ]; then
-	echo "拒绝写入符号链接 .env，请使用独立配置文件" >&2
+env_file="${1:-.env}"
+if [ -L "$env_file" ]; then
+	echo "拒绝写入符号链接，请使用独立配置文件" >&2
 	exit 1
 fi
-if [ ! -f .env ]; then
-	cp .env.example .env
-	echo "已从 .env.example 创建 .env"
+if [ ! -f "$env_file" ]; then
+	cp -- "${env_file}.example" "$env_file"
+	echo "已从示例创建 ${env_file}"
 fi
-chmod 600 .env
+chmod 600 "$env_file"
 temporary=""
 trap 'if [ -n "$temporary" ]; then rm -f -- "$temporary"; fi' EXIT
 
@@ -32,15 +34,15 @@ replace() {
 	local key="$1"
 	local value="$2"
 	local count
-	count="$(grep -c "^${key}=" .env || true)"
+	count="$(grep -c "^${key}=" "$env_file" || true)"
 	if [ "$count" -ne 1 ]; then
-		echo "${key} 必须在 .env 中出现且只出现一次，请核对 .env.example" >&2
+		echo "${key} 必须在配置文件中出现且只出现一次，请核对对应示例" >&2
 		exit 1
 	fi
-	if grep -q "^${key}=__GENERATE__$" .env; then
-		temporary="$(mktemp .env.tmp.XXXXXX)"
-		sed "s|^${key}=__GENERATE__$|${key}=${value}|" .env >"$temporary"
-		mv -- "$temporary" .env
+	if grep -q "^${key}=__GENERATE__$" "$env_file"; then
+		temporary="$(mktemp "${env_file}.tmp.XXXXXX")"
+		sed "s|^${key}=__GENERATE__$|${key}=${value}|" "$env_file" >"$temporary"
+		mv -- "$temporary" "$env_file"
 		temporary=""
 		echo "已生成 ${key}"
 	else
@@ -55,8 +57,12 @@ replace VERIFICATION_HMAC_KEY "$(openssl rand -base64 32 | tr -d '\n')"
 replace CREDENTIAL_ENCRYPTION_KEY "$(openssl rand -base64 32 | tr -d '\n')"
 replace JOBPILOT_EXCHANGE_SECRET "$(openssl rand -base64 32 | tr -d '\n')"
 
+for name in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD; do
+ if grep -q "^${name}=" "$env_file"; then replace "$name" "$(openssl rand -hex 24)"; fi
+done
+
 echo
-echo "完成。接下来编辑 .env，至少确认以下配置："
+echo "完成。接下来编辑 ${env_file}，至少确认以下配置："
 echo "  SITE_ADDRESS   域名或 :80"
 echo "  PUBLIC_ORIGIN  浏览器实际访问的地址，必须与 SITE_ADDRESS 一致"
 echo "  COOKIE_SECURE  纯 HTTP 用 false，有 HTTPS 用 true"

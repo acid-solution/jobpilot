@@ -1,5 +1,7 @@
 # JobPilot（开发中）
 
+服务器上同时运行 JobPilot 和 StudyFlow，见 [联合部署说明](deploy/JOINT_DEPLOYMENT.md)。
+
 JobPilot 帮助求职者根据真实岗位要求和自己的经历，了解能力差距，并选择适合写进简历的项目。目前仍在开发，模型生成的结果需要结合原始 JD 和个人情况核对。
 
 ## 本地启动

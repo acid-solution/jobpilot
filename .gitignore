@@ -1,1 +1,3 @@
 .go-cache/
+/deploy/.env*
+!/deploy/.env*.example

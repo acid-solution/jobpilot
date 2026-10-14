@@ -16,6 +16,15 @@ cp "$work/.env" "$work/snapshot"
 bash "$work/generate-secrets.sh" >/dev/null
 cmp "$work/.env" "$work/snapshot"
 echo "PASS: secret generation is private and preserves existing credentials"
+cp /source/.env.joint.example "$work/"
+bash "$work/generate-secrets.sh" .env.joint >/dev/null
+test "$(stat -c '%a' "$work/.env.joint")" = 600
+! grep -q '__GENERATE__' "$work/.env.joint"
+cp "$work/.env.joint" "$work/joint-snapshot"
+bash "$work/generate-secrets.sh" .env.joint >/dev/null
+cmp "$work/.env.joint" "$work/joint-snapshot"
+cmp "$work/.env" "$work/snapshot"
+echo "PASS: joint credentials are generated independently and idempotently"
 
 mkdir -p /app
 cat >/app/shared-auth <<'SH'
@@ -50,6 +59,8 @@ echo "PASS: existing Docker configuration and running daemon are preserved"
 
 bash -n /source/bootstrap-server.sh /source/generate-secrets.sh /source/postgres-init/01-create-databases.sh
 bash -n /source/postgres-entrypoint.sh
+bash -n /source/mysql-entrypoint.sh
+if MYSQL_ROOT_PASSWORD=__GENERATE__ MYSQL_PASSWORD=unused bash /source/mysql-entrypoint.sh mysqld 2>/dev/null; then exit 1; fi
 if POSTGRES_PASSWORD=__GENERATE__ bash /source/postgres-entrypoint.sh postgres 2>/dev/null; then exit 1; fi
 sh -n /source/auth-entrypoint.sh
 echo "PASS: deployment shell syntax"

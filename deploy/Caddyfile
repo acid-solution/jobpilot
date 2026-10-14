@@ -1,4 +1,4 @@
-# JobPilot 反向代理。
+# JobPilot HTTPS 与反向代理入口。页面及静态文件由 Go 提供。
 #
 # 前端与 API 同源：浏览器只访问 SITE_ADDRESS 一个来源，Caddy 按路径把请求分发出去。
 # 后端没有任何 CORS 中间件，同源是它唯一能工作的部署方式，不要拆成两个域名。
@@ -52,10 +52,10 @@
 		}
 	}
 
-	# 单页应用回退：静态文件命中就返回文件，否则返回 index.html 交给前端路由。
+	# 页面、静态资源及 SPA 回退由 Go 服务处理。
 	handle {
-		root * /srv
-		try_files {path} /index.html
-		file_server
+		reverse_proxy api:18081 {
+			flush_interval -1
+		}
 	}
 }

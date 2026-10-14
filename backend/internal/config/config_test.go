@@ -13,6 +13,19 @@ func testValues() configValues {
 	}
 }
 
+func TestFrontendDirectoryIsOptional(t *testing.T) {
+	values := testValues()
+	cfg, err := parse(values)
+	if err != nil || cfg.FrontendDistDir != "" {
+		t.Fatal("API-only development default changed")
+	}
+	values["FRONTEND_DIST_DIR"] = " /app/frontend/dist "
+	cfg, err = parse(values)
+	if err != nil || cfg.FrontendDistDir != "/app/frontend/dist" {
+		t.Fatal("frontend directory was not configured")
+	}
+}
+
 func TestWorkerCountDefaultAndValidation(t *testing.T) {
 	for _, tc := range []struct {
 		value string

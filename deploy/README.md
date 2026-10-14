@@ -1,24 +1,26 @@
 # JobPilot 单机部署
 
-一台 Linux 服务器上用 Docker Compose 跑起 JobPilot 的完整栈：反向代理、前端、后端 API、共享认证服务和数据库。
+一台 Linux 服务器上用 Docker Compose 跑起 JobPilot：Go 同时提供前端页面与 API，Caddy 提供 HTTPS 与转发，共享认证和数据库独立运行。
 
 ```
 浏览器
   │  HTTP/HTTPS（只暴露 web 容器的端口）
   ▼
 web（Caddy）
-  ├── /                → 前端静态文件，未命中路径回退 index.html
+  ├── 页面与静态资源    → api:18081（Go 提供文件与页面回退）
   ├── /api/*           → api:18081   （SSE 已关闭缓冲）
   ├── /health/*        → api:18081
   ├── /auth/*          → auth:18082  （刷新令牌 Cookie 的作用域就是这个前缀）
   └── /dev/*           → 固定 404，开发收件箱接口不对公网开放
 
-api（JobPilot 后端）──┐
+api（Go + 前端产物）──┐
 auth（shared-auth）──┼── postgres（pgvector，两个库：jobpilot / shared_auth）
                      └── auth-keygen 只跑一次，生成 JWT 签名私钥
 ```
 
 前端和 API 必须同源。JobPilot 后端没有任何 CORS 中间件，它只在同一个来源下工作，不要把前后端拆成两个域名。
+
+仓库根目录 Dockerfile 分别构建 Node 前端和 Go 后端，再把 `dist` 与服务程序放入同一运行镜像。web 服务使用 Caddy 官方镜像，不保存前端文件。`FRONTEND_DIST_DIR=/app/frontend/dist` 由 Compose 设置；目录或首页缺失时 API 拒绝启动。
 
 ---
 
@@ -169,6 +171,8 @@ docker compose exec -T postgres pg_dump -U jobpilot shared_auth | gzip > shared_
 
 **`CREDENTIAL_ENCRYPTION_KEY` 必须单独留存**。用户自己填写的 DeepSeek Key 用它加密后存进数据库，密钥丢失后这些数据无法恢复，重新生成也不会让旧数据重新可读。
 
+从旧的前后端分别打包方式更新时，直接执行 `docker compose up -d --build`。项目名和数据卷名称保持不变，数据库及认证签名密钥会继续使用；不要执行 `down -v`。前端更新需要重建 api 镜像，不再重建独立前端镜像。
+
 ---
 
 ## 7. 已知约束
@@ -213,3 +217,5 @@ docker run --rm --network none -v "$PWD:/source:ro" \
 ```
 
 本次修正使用独立测试项目和测试邮件凭证验证了 production/resend 模式启动：数据库、认证与 API 健康，首页和 `/health/ready` 正常，公网开发收件箱返回 404。测试没有发送真实邮件，没有替换本机原有网站。
+
+前后端合并部署另外验证了 Go 提供首页、页面刷新、静态资源与缓存，错误 API 和缺失资源返回 404；Caddy 镜像没有前端文件。隔离栈临时使用开发收件箱完成登录、刷新 Cookie、带令牌 API 与无令牌 401 测试，正式默认仍是 Resend。使用模拟上游和生产 Caddy 配置验证了 SSE 首个小事件在请求完成前到达客户端，无需调用真实模型。

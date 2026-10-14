@@ -14,6 +14,7 @@ import (
 const defaultDevUserID = "00000000-0000-0000-0000-000000000001"
 
 type Config struct {
+	FrontendDistDir                string
 	ModelPricingFile               string
 	LearningRoutesEnabled          bool
 	StudyFlowMCPURL                string
@@ -139,6 +140,7 @@ func parse(values configValues) (Config, error) {
 		return Config{}, errors.New("WORKER_COUNT must be a positive integer")
 	}
 	return Config{
+		FrontendDistDir:                strings.TrimSpace(values["FRONTEND_DIST_DIR"]),
 		ModelPricingFile:               values["MODEL_PRICING_FILE"],
 		Environment:                    environment,
 		HTTPAddr:                       values.valueOrDefault("HTTP_ADDR", "127.0.0.1:18081"),

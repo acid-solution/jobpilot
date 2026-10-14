@@ -46,6 +46,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	frontendHandler, err := httpapi.NewFrontend(configuration.FrontendDistDir)
+	if err != nil {
+		return err
+	}
 
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelStartup()
@@ -229,6 +233,9 @@ func run() error {
 			return database.PingContext(ctx)
 		},
 	})
+	if frontendHandler != nil {
+		router.NoRoute(frontendHandler)
+	}
 	server := &http.Server{
 		Addr:              configuration.HTTPAddr,
 		Handler:           router,

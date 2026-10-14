@@ -85,9 +85,10 @@ services:
 
   api:
     build:
-      context: ../backend
+      context: ..
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com/}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -97,6 +98,7 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-production}
       HTTP_ADDR: "0.0.0.0:18081"
+      FRONTEND_DIST_DIR: /app/frontend/dist
       WORKER_COUNT: ${WORKER_COUNT:-2}
       DATABASE_URL: postgres://${POSTGRES_USER:-jobpilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-jobpilot}?sslmode=disable
 
@@ -138,10 +140,7 @@ services:
     networks: [stack]
 
   web:
-    build:
-      context: ../frontend
-      args:
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com/}
+    image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
       api:

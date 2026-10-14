@@ -111,6 +111,7 @@ func (s *Service) Get(ctx context.Context, user uuid.UUID) (View, error) {
 		}
 		result = View{Readiness: ss.Readiness, Knowledge: &ss.Input.Knowledge, Warnings: []string{}, ImportEnabled: s.remote != nil && s.remote.Enabled(), StudyFlowURL: s.webURL}
 		result.GoalTitle = ss.Input.Profile.Goal
+		result.ProjectTitle = ss.Input.Project.Title
 		if ss.Input.Knowledge.TargetID == uuid.Nil {
 			result.Knowledge = nil
 		}

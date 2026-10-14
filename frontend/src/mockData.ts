@@ -8,6 +8,7 @@ export const navItems: NavItem[] = [
   { id: 'profile', shortLabel: '我', label: '用户画像' },
   { id: 'projects', shortLabel: '项', label: '项目推荐' },
   { id: 'gaps', shortLabel: '知', label: '知识短板' },
+  { id: 'learning', shortLabel: '学', label: '学习路线' },
   { id: 'settings', shortLabel: '设', label: '设置' },
 ]
 
@@ -39,6 +40,7 @@ export const preparationSteps: PreparationStep[] = [
 ]
 
 export const nextStepPrompts: Record<PageId, string> = {
+  learning: '先确认已选项目，再设置两份计划的投入预算，生成并核对学习路线。',
   dashboard:
     '根据当前进度，建议先再录入 2 份符合“后端开发＋Agent 应用”目标的完整 JD。市场画像达到门槛后，再补齐 Redis、Agent 开发和大模型基础 3 项能力。',
   market:

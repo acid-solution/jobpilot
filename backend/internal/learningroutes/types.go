@@ -95,6 +95,7 @@ type ImportRequest struct {
 	DispatchToken uuid.UUID `json:"-"`
 }
 type View struct {
+	ProjectTitle         string                  `json:"project_title,omitempty"`
 	GoalTitle            string                  `json:"goal_title"`
 	Readiness            knowledgegaps.Readiness `json:"readiness"`
 	Knowledge            *knowledgegaps.Report   `json:"knowledge_summary,omitempty"`

@@ -4,6 +4,7 @@ export type PageId =
   | 'profile'
   | 'projects'
   | 'gaps'
+  | 'learning'
   | 'settings'
 
 export interface NavItem {

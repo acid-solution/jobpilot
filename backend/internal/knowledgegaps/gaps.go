@@ -46,7 +46,7 @@ type Item struct {
 	Kind           string             `json:"kind"`
 	Name           string             `json:"name"`
 	AbilityID      *uuid.UUID         `json:"ability_id,omitempty"`
-	CurrentLevel   int                `json:"current_level,omitempty"`
+	CurrentLevel   int                `json:"current_level"`
 	TargetLevel    int                `json:"target_level,omitempty"`
 	UserSource     string             `json:"user_source,omitempty"`
 	UserEvidence   []profile.Evidence `json:"user_evidence,omitempty"`

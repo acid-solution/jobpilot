@@ -9,6 +9,7 @@ export interface LearningRouteVersion { id: string; route_id: string; version_no
 export interface LearningRouteReceipt { import_id: string; goal_id: string; source_route_id: string; source_version: number; content_digest: string; plans: Array<{ role: string; plan_id: string; plan_version_id: string; version_no: number }> }
 export interface LearningRouteView {
  goal_title: string
+ project_title?: string
  readiness: KnowledgeGapView['readiness']; knowledge_summary?: KnowledgeGapReport; version?: LearningRouteVersion
  job?: { id: string; status: string; attempts: number; error_code?: string; error_message?: string; updated_at: string }
  import?: { id: string; version_id: string; revision: number; status: string; error_code?: string; receipt?: LearningRouteReceipt }

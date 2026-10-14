@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import {
   BookOpenCheck,
+  Route,
   BriefcaseBusiness,
   Check,
   Files,
@@ -32,6 +33,7 @@ import { navItems } from './mockData'
 import { KnowledgeGapsPage } from './pages/KnowledgeGapsPage'
 import { MarketPage } from './pages/MarketPage'
 import { ProjectsPage } from './pages/ProjectsPage'
+import { LearningRoutePanel } from './pages/LearningRoutePanel'
 import { SettingsPage } from './pages/SettingsPage'
 import { UserProfilePage } from './pages/UserProfilePage'
 import type { PageId } from './types'
@@ -42,6 +44,7 @@ const navIcons: Record<PageId, LucideIcon> = {
   profile: UserRound,
   projects: FolderGit2,
   gaps: BookOpenCheck,
+  learning: Route,
   settings: Settings,
 }
 
@@ -219,6 +222,7 @@ function buildNextStepPrompt(
 
   if (page === 'projects') return '市场画像和用户画像已经完成。可以结合岗位需要、已有能力和项目体量查看项目推荐理由。'
   if (page === 'gaps') return '市场画像和用户画像已经完成。可以按市场常见要求与当前能力等级查看需要补齐的理论知识。'
+  if (page === 'learning') return '先确认已选项目，再设置项目实践与知识准备的预算，生成学习路线并核对后导入 StudyFlow。'
   if (page === 'settings') return '当前画像准备已经完成。设置页可以管理模型连接和账号配置。'
   return '市场画像和用户画像已经完成。下一步可以查看项目推荐，或进入知识短板页检查理论能力差距。'
 }
@@ -394,6 +398,8 @@ function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSigned
           <ProjectsPage key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} />
         ) : currentPage === 'gaps' ? (
           <KnowledgeGapsPage key={agentRefresh} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} onOpenSettings={() => setCurrentPage('settings')} />
+        ) : currentPage === 'learning' ? (
+          <div className="page-content"><h1>学习路线</h1><p className="page-description">围绕已选项目和知识准备目标，规划两份可以并行推进的学习计划。</p><LearningRoutePanel key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} onOpenProjects={() => setCurrentPage('projects')} /></div>
         ) : (
           <SettingsPage key={agentRefresh} />
         )}

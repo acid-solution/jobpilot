@@ -29,6 +29,6 @@ JD 分析和报告生成可能需要等待后台任务完成。目录审核、�
 
 ## 学习路线与 StudyFlow
 
-选择项目后，打开“学习路线”，分别设置项目实践和知识准备的投入预算，生成并编辑预览。两份计划可以按课时推进或按日期安排到天。确认导入后，打开 StudyFlow，用同一账号正常登录，再主动激活计划草稿。更新知识计划会保留项目计划和已有执行进度。
+选择项目后，从侧边导航打开独立的“学习路线”页面，分别设置项目实践和知识准备的投入预算，生成并编辑预览。两份计划可以按课时推进或按日期安排到天。确认导入后，打开 StudyFlow，用同一账号正常登录，再主动激活计划草稿。更新知识计划会保留项目计划和已有执行进度。
 
 启用此功能需要先部署支持路线导入的 StudyFlow 和支持令牌交换的 shared-auth。在后端配置 `LEARNING_ROUTES_ENABLED=true`、`AUTH_EXCHANGE_URL`、`JOBPILOT_EXCHANGE_SECRET`、`STUDYFLOW_MCP_URL` 和 `STUDYFLOW_WEB_URL`；shared-auth 使用相同服务密钥，两个服务中的 `STUDYFLOW_MCP_RESOURCE` 必须与 MCP 地址一致。具体部署配置见 [学习路线使用说明](docs/LEARNING_ROUTES.md)。

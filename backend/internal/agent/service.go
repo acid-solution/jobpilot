@@ -178,6 +178,8 @@ func (s *Service) nextStep(ctx context.Context, user uuid.UUID, page string, t *
 		return "两类画像已具备基础。可以生成项目推荐，再逐项核对推荐理由与参考仓库。"
 	case "gaps":
 		return "两类画像已具备基础。可以生成知识短板报告，查看完整能力项的等级差距。"
+	case "learning", "学习路线":
+		return "下一步：在学习路线页面核对已选项目和投入预算，生成两份计划并预览，确认后导入 StudyFlow 草稿。"
 	}
 	return "两类画像已具备基础。下一步可查看知识短板，或生成项目推荐。"
 }

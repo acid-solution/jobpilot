@@ -1,6 +1,7 @@
 package knowledgegaps
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
@@ -8,6 +9,22 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/google/uuid"
 )
+
+func TestReportJSONPreservesExplicitL0(t *testing.T) {
+	raw, err := json.Marshal(Report{Gaps: []Item{{Kind: "ability", Name: "MCP 开发", CurrentLevel: 0, TargetLevel: 3, UserSource: "manual"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Gaps []map[string]json.RawMessage `json:"gaps"`
+	}
+	if err = json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Gaps) != 1 || string(response.Gaps[0]["current_level"]) != "0" {
+		t.Fatalf("L0 omitted from API response: %s", raw)
+	}
+}
 
 func TestBuildRespectsChoiceAndDistinctAbilities(t *testing.T) {
 	goID, pythonID, redisID := uuid.New(), uuid.New(), uuid.New()

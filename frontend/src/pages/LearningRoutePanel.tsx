@@ -20,7 +20,7 @@ function cleanDependencies(v: LearningRouteVersion) {
   v.plans.forEach(p => p.stages.forEach(s => s.tasks.forEach(t => { t.depends_on = t.depends_on?.filter(id => ids.has(id)) })))
 }
 
-export function LearningRoutePanel() {
+export function LearningRoutePanel({ onOpenProjects }: { onOpenProjects?: () => void }) {
   const [view, setView] = useState<LearningRouteView | null>(null)
   const [config, setConfig] = useState<LearningRouteConfig>(initial)
   const [draft, setDraft] = useState<LearningRouteVersion | null>(null)
@@ -44,9 +44,10 @@ export function LearningRoutePanel() {
   const plan = draft ?? view?.version
 
   return <section className="learning-route-panel" aria-label="学习路线">
-    <div className="chosen-project-section-heading"><span className="eyebrow">规划 → 执行</span><h2>学习路线</h2><p>JobPilot 规划两份并行计划，确认导入后在 StudyFlow 中激活。任务完成不会自动升级能力。</p></div>
+    <div className="chosen-project-section-heading"><span className="eyebrow">规划 → 执行</span><h2>规划与导入</h2><p>JobPilot 规划两份并行计划，确认导入后在 StudyFlow 中激活。任务完成不会自动升级能力。</p>{view?.project_title && <p>已选项目：{view.project_title}</p>}</div>
     {error && <div className="market-notice" role="alert">{error}</div>}{notice && <div className="market-notice" role="status">{notice}</div>}
     {view?.readiness.code !== 'ready' && <div className="project-status-banner">{view?.readiness.message || '正在核对画像与已选项目……'}</div>}
+    {onOpenProjects && ['project_missing', 'project_stale'].includes(view?.readiness.code ?? '') && <button className="button" onClick={onOpenProjects}>前往项目推荐选择或核对项目</button>}
     {view?.knowledge_summary && <section className="route-knowledge"><h3>当前知识准备目标</h3><p>{view.knowledge_summary.gaps.length ? `${view.knowledge_summary.gaps.length} 项必备要求尚未满足` : '没有必备知识短板，知识计划用于复习与验证'} · {view.knowledge_summary.met.length} 项已达标</p>
       {view.knowledge_summary.gaps.map(g => <div className="route-gap" key={g.id}><strong>{g.name}</strong>{g.options?.length ? <><p>需补强 {(g.required_count ?? 1) - (g.satisfied_count ?? 0)} 条路径；不需要掌握全部候选。</p><div>{g.options.filter(o => !o.satisfied).map(o => <label key={o.ability_id}><input type="checkbox" disabled={busy || editing} checked={config.paths?.find(p => p.gap_id === g.id)?.ability_ids.includes(o.ability_id) ?? false} onChange={e => { const paths = config.paths?.filter(p => p.gap_id !== g.id) ?? []; const ids = config.paths?.find(p => p.gap_id === g.id)?.ability_ids ?? []; const next = e.target.checked ? [...ids, o.ability_id] : ids.filter(id => id !== o.ability_id); setConfig({ ...config, paths: next.length ? [...paths, { gap_id: g.id, ability_ids: next }] : paths }) }} />{o.name}：{o.assessed ? `L${o.current_level}` : '未评估'} → L{o.required_level}</label>)}</div><small>可选择路径；留空由模型建议，并说明理由。</small></> : <p>L{g.current_level ?? 0} → L{g.target_level}</p>}</div>)}
     </section>}

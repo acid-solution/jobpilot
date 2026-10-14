@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, ArrowRight, BriefcaseBusiness, CheckCircle2, Clock3, LockKeyhole, RotateCcw, Sparkles, UserRound, X } from 'lucide-react'
 import { jobPilotAPI, type ProjectRecommendationsView, type RecommendedProject } from '../api'
-import { LearningRoutePanel } from './LearningRoutePanel'
 
 interface Props { onOpenMarket: () => void; onOpenProfile: () => void }
 const message = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试'
@@ -83,7 +82,6 @@ export function ProjectsPage({ onOpenMarket, onOpenProfile }: Props) {
   const [notice, setNotice] = useState('')
   const [selectedID, setSelectedID] = useState<string | null>(null)
   const [showChosen, setShowChosen] = useState(false)
-  const [showRoute, setShowRoute] = useState(false)
   const [showRegenerate, setShowRegenerate] = useState(false)
   const [adjustment, setAdjustment] = useState('')
 
@@ -124,8 +122,6 @@ export function ProjectsPage({ onOpenMarket, onOpenProfile }: Props) {
     {!loading && view?.stale && <div className="project-status-banner">画像资料已变化，当前推荐来自旧画像。画像准备完成后可以重新推荐。</div>}
     {chosen && view?.selection_needs_review && <div className="project-status-banner">已选项目的依据发生变化。<button className="button" disabled={!ready || busy} onClick={() => setSelectedID(chosen.id)}>核对并重新确认这个项目</button></div>}
     {view?.knowledge_preparation && <section className="project-status-banner"><strong>实时知识准备摘要</strong><p>{view.knowledge_preparation.gaps.length ? `${view.knowledge_preparation.gaps.length} 项必备要求尚未满足` : '当前没有必备知识短板，可安排复习与验证'} · {view.knowledge_preparation.met.length} 项已达标。等级变化会更新此摘要，保留项目与选择。</p></section>}
-    {chosen && <div className="route-actions"><button className="button" onClick={() => { setShowChosen(true); setShowRoute(!showRoute) }}>{showRoute ? '收起学习路线' : '学习路线'}</button></div>}
-    {chosen && showRoute && <LearningRoutePanel key={`${view?.report?.id}:${chosen.id}`} />}
     {!loading && showChosen && chosen && <section className="chosen-project" aria-labelledby="chosen-project-title">
       <div className="chosen-project-hero"><div className="chosen-project-copy"><div className="chosen-project-kicker"><span className="chosen-project-state"><CheckCircle2 size={14} />已选定</span></div><h2 id="chosen-project-title">{chosen.title}</h2><p>{chosen.summary}</p></div><div className="chosen-project-meta"><div><span>对应目标</span><strong>{view?.report?.target_title}</strong></div><div><span>预计投入周期</span><strong>{chosen.duration}</strong></div><div><span>推荐顺序</span><strong>#{chosen.rank}</strong></div></div></div>
       <div className="chosen-project-layout"><div className="chosen-project-main"><section><span className="eyebrow">模型判断的项目设想</span><h3>要解决的问题</h3><p>{chosen.problem}</p></section><section><span className="eyebrow">预期形态</span><h3>准备做成什么</h3><p>{chosen.shape}</p></section><section><span className="eyebrow">个人工作</span><h3>需要完成的主体范围</h3><ol className="chosen-project-scope">{chosen.scope.map((item) => <li key={item}>{item}</li>)}</ol></section></div><aside className="chosen-project-aside"><section><h3>为什么适合你</h3><List items={chosen.fit_reasons} /></section><section><h3>可以体现的能力</h3><div className="project-skill-tags is-detail">{chosen.abilities.map((item) => <span key={item}>{item}</span>)}</div></section></aside></div>

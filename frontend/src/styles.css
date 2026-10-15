@@ -5416,3 +5416,14 @@ textarea:focus-visible {
 .usage-table th,.usage-table td { text-align:left; padding:12px 9px; border-bottom:1px solid var(--border); vertical-align:top; max-width:240px; overflow-wrap:anywhere; }
 .usage-table th { color:var(--muted); font-weight:500; }.usage-table small { display:block; margin-top:5px; color:var(--muted); font-size:10px; line-height:1.6; }
 @media(max-width:800px){.usage-summary-grid { grid-template-columns:1fr; }}
+
+/* The memory manager reuses the assistant panel and card visual language. */
+.agent-memory-panel{overflow-y:auto;padding:16px;gap:12px;display:flex;flex-direction:column}
+.agent-memory-panel>p,.agent-memory-panel small{font-size:12px;color:var(--text-muted,#67758b);line-height:1.6}
+.agent-memory-editor{display:grid;gap:12px;border-top:1px solid #e2e7ef;padding-top:14px}
+.agent-memory-editor label{display:grid;gap:6px;font-size:12px}
+.agent-memory-editor textarea,.agent-memory-editor select,.agent-memory-suggestion textarea{width:100%;border:1px solid #dbe2ed;border-radius:8px;padding:8px;background:#f8faff;font:inherit}
+.agent-memory-editor textarea,.agent-memory-suggestion textarea{min-height:74px;resize:vertical}
+.agent-memory-list{display:grid;gap:10px}.agent-memory-panel .operation-card{margin:0}
+.agent-memory-suggestion small{color:#64748b}.agent-memory-suggestion blockquote{white-space:pre-wrap;font-size:12px}
+.agent-context-warning{font-size:11px;color:#8a5a12;background:#fff8e8;border-radius:6px;padding:6px 8px;margin-bottom:8px}

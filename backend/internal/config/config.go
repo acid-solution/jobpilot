@@ -7,13 +7,16 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"time"
 )
 
 const defaultDevUserID = "00000000-0000-0000-0000-000000000001"
 
 type Config struct {
+	AgentContext                   agentcontext.Config
 	FrontendDistDir                string
 	ModelPricingFile               string
 	LearningRoutesEnabled          bool
@@ -144,7 +147,37 @@ func parse(values configValues) (Config, error) {
 	if err != nil || workerCount < 1 {
 		return Config{}, errors.New("WORKER_COUNT must be a positive integer")
 	}
+	ac := agentcontext.DefaultConfig()
+	for key, destination := range map[string]*int{
+		"AGENT_CONTEXT_INPUT_MAX_TOKENS": &ac.InputMax, "AGENT_CONTEXT_COMPACT_AT_TOKENS": &ac.CompactAt, "AGENT_CONTEXT_RECENT_TOKENS": &ac.Recent, "AGENT_CONTEXT_SUMMARY_MAX_TOKENS": &ac.SummaryMax, "AGENT_CONTEXT_OUTPUT_RESERVE_TOKENS": &ac.OutputReserve, "AGENT_CONTEXT_SAFETY_TOKENS": &ac.Safety, "AGENT_CONTEXT_MODEL_WINDOW_TOKENS": &ac.ModelWindow} {
+		if v := values[key]; v != "" {
+			n, e := strconv.Atoi(v)
+			if e != nil {
+				return Config{}, errors.New("invalid " + key)
+			}
+			*destination = n
+		}
+	}
+	for key, destination := range map[string]*bool{"AGENT_CONTEXT_ENABLED": &ac.Enabled, "AGENT_MEMORY_ENABLED": &ac.MemoryEnabled} {
+		if v := values[key]; v != "" {
+			n, e := strconv.ParseBool(v)
+			if e != nil {
+				return Config{}, errors.New("invalid " + key)
+			}
+			*destination = n
+		}
+	}
+	if v := values["AGENT_CONTEXT_ARTIFACT_TTL"]; v != "" {
+		ac.ArtifactTTL, err = time.ParseDuration(v)
+		if err != nil {
+			return Config{}, errors.New("invalid AGENT_CONTEXT_ARTIFACT_TTL")
+		}
+	}
+	if err = ac.Validate(); err != nil {
+		return Config{}, err
+	}
 	return Config{
+		AgentContext:                   ac,
 		FrontendDistDir:                strings.TrimSpace(values["FRONTEND_DIST_DIR"]),
 		ModelPricingFile:               values["MODEL_PRICING_FILE"],
 		Environment:                    environment,

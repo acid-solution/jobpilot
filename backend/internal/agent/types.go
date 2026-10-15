@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,10 +25,13 @@ type Conversation struct {
 	PendingAction *Action   `json:"pending_action,omitempty"`
 }
 type Message struct {
-	ID        uuid.UUID `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ContextStale bool      `json:"context_stale,omitempty"`
+	Sequence     int64     `json:"sequence,omitempty"`
+	Kind         string    `json:"kind,omitempty"`
+	ID           uuid.UUID `json:"id"`
+	Role         string    `json:"role"`
+	Content      string    `json:"content"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 type Action struct {
 	Result           json.RawMessage  `json:"result,omitempty"`
@@ -48,12 +52,13 @@ type Snapshot struct {
 	Versions map[string]int64
 }
 type Event struct {
-	Type     string  `json:"type"`
-	Text     string  `json:"text,omitempty"`
-	Tool     string  `json:"tool,omitempty"`
-	Action   *Action `json:"action,omitempty"`
-	Citation any     `json:"citation,omitempty"`
-	Code     string  `json:"code,omitempty"`
+	Proposal *assistantmemory.Proposal `json:"proposal,omitempty"`
+	Type     string                    `json:"type"`
+	Text     string                    `json:"text,omitempty"`
+	Tool     string                    `json:"tool,omitempty"`
+	Action   *Action                   `json:"action,omitempty"`
+	Citation any                       `json:"citation,omitempty"`
+	Code     string                    `json:"code,omitempty"`
 }
 
 type Repository interface {

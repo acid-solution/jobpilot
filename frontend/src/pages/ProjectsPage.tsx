@@ -1,3 +1,4 @@
+import { GenerationPreferences } from '../components/GenerationPreferences'
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, ArrowRight, BriefcaseBusiness, CheckCircle2, Clock3, LockKeyhole, RotateCcw, Sparkles, UserRound, X } from 'lucide-react'
 import { jobPilotAPI, type ProjectRecommendationsView, type RecommendedProject } from '../api'
@@ -114,6 +115,7 @@ export function ProjectsPage({ onOpenMarket, onOpenProfile }: Props) {
     <div className="page-heading-row"><div><h1>{showChosen && chosen ? '已选项目' : '项目推荐'}</h1><p className="page-description">{showChosen && chosen ? '查看已经选定的方向、推荐依据和开始前需要核对的事项。' : '结合目标岗位和个人情况，筛选值得投入、适合写进简历的项目。'}</p></div>
       <div className="project-heading-actions">{showChosen && chosen ? <button className="button" type="button" onClick={() => setShowChosen(false)}><ArrowLeft size={15} />返回推荐列表</button> : view?.report ? <button className="button button-primary projects-generate-button" type="button" disabled={!ready || running || busy} onClick={() => setShowRegenerate(true)}><RotateCcw size={15} />调整后重新推荐</button> : <button className="button button-primary projects-generate-button" type="button" disabled={!ready || running || busy || loading} onClick={() => generate()}><Sparkles size={16} />生成推荐</button>}</div>
     </div>
+    <GenerationPreferences purpose="recommendations" basis={view?.report?.preferences} adjustment={view?.report?.preference_adjustment}/>
     {error && <div className="market-notice" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭提示"><X size={15} /></button></div>}
     {notice && <div className="market-notice" role="status"><CheckCircle2 size={17} /><span>{notice}</span><button type="button" onClick={() => setNotice('')} aria-label="关闭提示"><X size={15} /></button></div>}
     {loading && <section className="project-result-empty"><p>正在读取当前推荐与画像进度……</p></section>}

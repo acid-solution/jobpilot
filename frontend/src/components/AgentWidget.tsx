@@ -4,10 +4,12 @@ import {
   useRef,
   useState,
 } from 'react'
-import { ArrowUp, Bot, History, Minus, ScanLine, Sparkles, SquarePen, Trash2 } from 'lucide-react'
+import { ArrowUp, Bot, Brain, History, Minus, ScanLine, Sparkles, SquarePen, Trash2 } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { agentAPI, type AgentActionRecord, type AgentConversationRecord, type AgentMessageRecord, type AgentStreamEvent } from '../api'
+import { AgentMemoryPanel, MemorySuggestion } from './AgentMemoryPanel'
+import { memoryAPI, type MemoryProposal } from '../api'
 import type { LearningRouteVersion } from '../learningRouteTypes'
 
 function ActionParameters({ action }: { action: AgentActionRecord }) {
@@ -92,6 +94,10 @@ const readResourceLabels: Record<string, string> = {
 export function AgentWidget({ currentPage, currentTarget, targetRevision }: AgentWidgetProps) {
   const [open, setOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [memoryOpen,setMemoryOpen]=useState(false)
+  const [proposals,setProposals]=useState<MemoryProposal[]>([])
+  const [olderAvailable,setOlderAvailable]=useState(true)
+  const [loadingHistory,setLoadingHistory]=useState(false)
   const [conversations, setConversations] = useState<AgentConversationRecord[]>([])
   const [activeId, setActiveId] = useState('')
   const [activeConversation, setActiveConversation] = useState<AgentConversationRecord | null>(null)
@@ -114,6 +120,7 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
     const epoch = ++scopeEpoch.current
     let cancelled = false
     setError('')
+    setProposals([]);setMemoryOpen(false)
     setActiveId('')
     setActiveConversation(null)
     setPendingAction(null)
@@ -138,6 +145,8 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
     agentAPI.get(activeId).then((value) => {
       if (cancelled || epoch !== scopeEpoch.current) return
       setActiveConversation(value)
+      setOlderAvailable((value.messages?.length ?? 0)>=200)
+      void memoryAPI.proposals().then(setProposals).catch(() => undefined)
       setPendingAction(value.pending_action ?? null)
     }).catch((failure: unknown) => { if (!cancelled && epoch === scopeEpoch.current) setError(failure instanceof Error ? failure.message : '读取对话失败') })
     return () => { cancelled = true }
@@ -146,9 +155,11 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
   useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight }) }, [activeConversation, liveText, pendingAction])
 
   const refresh = async (id: string, epoch = scopeEpoch.current) => {
-    const [items, detail] = await Promise.all([agentAPI.list(), agentAPI.get(id)])
+    const [items, detail, memorySuggestions] = await Promise.all([agentAPI.list(), agentAPI.get(id),memoryAPI.proposals()])
     if (epoch !== scopeEpoch.current) return
     setConversations(items)
+    setProposals(memorySuggestions)
+    setOlderAvailable((detail.messages?.length ?? 0)>=200)
     setActiveConversation(detail)
     setPendingAction(detail.pending_action ?? null)
   }
@@ -195,6 +206,9 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
 
   const onStreamEvent = (event: AgentStreamEvent, epoch: number) => {
     if (epoch !== scopeEpoch.current) return
+    if(event.type==='context') setToolStatus(event.text ?? '')
+    if(event.type==='context_invalidated'){setLiveText('');setError(event.text ?? '上下文已变化')}
+    if(event.type==='memory_proposal' && event.proposal)setProposals(current=>[...current.filter(p=>p.key!==event.proposal!.key),event.proposal!])
     if (event.type === 'delta') setLiveText((current) => current + (event.text ?? ''))
     if (event.type === 'tool') setToolStatus(event.tool === 'read_jobpilot'
       ? `已查询${readResourceLabels[event.text ?? ''] ?? '业务资料'}`
@@ -239,6 +253,17 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
     finally { if (epoch === scopeEpoch.current) { setBusy(false); setLiveText(''); setCitations([]) } }
   }
 
+  const loadOlder=async()=>{
+    if(!activeId||loadingHistory)return
+    const id=activeId,epoch=scopeEpoch.current
+    const first=activeConversation?.messages?.[0]?.sequence
+    if(!first)return
+    setLoadingHistory(true)
+    try{const page=await memoryAPI.history(id,first);if(epoch!==scopeEpoch.current)return;setActiveConversation(current=>current?.id===id?{...current,messages:[...page.messages,...(current.messages??[])]}:current);setOlderAvailable(page.next_before_sequence!=null)}
+    catch(e){if(epoch===scopeEpoch.current)setError(e instanceof Error?e.message:'读取历史失败')}
+    finally{setLoadingHistory(false)}
+  }
+  const refreshMemories=()=>{window.dispatchEvent(new Event('jobpilot:memory-change'));void memoryAPI.proposals().then(setProposals).catch(e=>setError(String(e)));if(activeId)void refresh(activeId).catch(e=>setError(String(e)))}
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('button')) return
     if (window.matchMedia('(max-width: 760px)').matches) return
@@ -309,12 +334,14 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
           </div>
         </div>
         <div className="agent-header-actions">
+          <button className="icon-button" type="button" onClick={()=>{setMemoryOpen(!memoryOpen);setHistoryOpen(false)}} aria-label="管理助手记忆"><Brain size={18}/></button>
           <button className="icon-button" type="button" onClick={createConversation} aria-label="新建对话"><SquarePen size={18} /></button>
           <button
             className="icon-button"
             type="button"
             onClick={() => {
               setHistoryOpen((current) => !current)
+              setMemoryOpen(false)
               setDeleteId(null)
             }}
             aria-label="查看对话列表"
@@ -332,10 +359,12 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
       </div>
 
       <div className="agent-thread" ref={threadRef}>
+        {olderAvailable&&(activeConversation?.messages?.length??0)>=200&&<button type="button" className="button" disabled={loadingHistory} onClick={()=>void loadOlder()}>{loadingHistory?'读取中……':'查看更早消息'}</button>}
         {messagesWithSources(activeConversation?.messages ?? []).map((message) => (
           <div className={`agent-message agent-message-${message.role}`} key={message.id}>
             {message.role === 'assistant' && <span className="message-avatar" aria-hidden="true"><Sparkles size={14} /></span>}
             <div className="message-bubble">
+              {message.context_stale && <p className="agent-context-warning">历史回答：相关依据已变化或未经过当前版本核验，请重新查询当前资料。</p>}
               {message.role === 'assistant' ? <AgentMarkdown content={message.content} /> : <p className="agent-user-content">{message.content}</p>}
               <AgentSources citations={message.citations} />
             </div>
@@ -356,6 +385,7 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
             </div>
           </div>
         )}
+        {!busy&&proposals.filter(p=>p.conversation_id===activeId).map(p=><MemorySuggestion key={p.id} proposal={p} onChange={refreshMemories}/>)}
         {error && <div className="operation-result" role="alert">{error}</div>}
       </div>
 
@@ -379,6 +409,7 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
         <div className="composer-note">新信息不会自动写入画像，保存前会让你确认。</div>
       </div>
 
+      {memoryOpen&&<AgentMemoryPanel key={targetRevision} onClose={()=>setMemoryOpen(false)} onChange={refreshMemories}/>}
       {historyOpen && (
         <section className="conversation-panel" aria-label="对话列表">
           <div className="conversation-panel-header">
@@ -424,7 +455,7 @@ export function AgentWidget({ currentPage, currentTarget, targetRevision }: Agen
           </div>
           {deleteId && (
             <div className="delete-confirm" role="alertdialog" aria-modal="true" aria-labelledby="delete-title">
-              <p id="delete-title">删除对话“{conversations.find((item) => item.id === deleteId)?.title}”？</p>
+              <p id="delete-title">删除对话“{conversations.find((item) => item.id === deleteId)?.title}”？已确认的长期偏好将保留，可在记忆面板单独遗忘。</p>
               <div>
                 <button className="button" type="button" onClick={() => setDeleteId(null)}>取消</button>
                 <button className="button button-danger" type="button" onClick={() => void removeConversation()}>删除</button>

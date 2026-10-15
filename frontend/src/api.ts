@@ -305,7 +305,7 @@ export interface ProjectRecommendationsView {
 	selection_needs_review?: boolean
 	knowledge_preparation?: KnowledgeGapReport
   readiness: KnowledgeGapView['readiness']
-  report?: { id: string; target_title: string; projects: RecommendedProject[]; empty_reason?: string; generated_at: string }
+  report?: { preferences?: MemorySnapshot; preference_adjustment?: string; id: string; target_title: string; projects: RecommendedProject[]; empty_reason?: string; generated_at: string }
   selected_project_id?: string
   stale: boolean
   job?: {
@@ -635,10 +635,22 @@ export const jobPilotAPI = {
   }),
 }
 
-export interface AgentMessageRecord { id: string; role: 'user' | 'assistant' | 'tool'; content: string; created_at: string }
+export interface AgentMessageRecord { id: string; role: 'user' | 'assistant' | 'tool'; content: string; created_at: string; sequence?: number; kind?: string; context_stale?: boolean }
 export interface AgentActionRecord { id: string; kind: string; arguments: Record<string, unknown>; summary: string; status: string }
 export interface AgentConversationRecord { id: string; title: string; status: 'idle' | 'running' | 'awaiting_confirmation'; updated_at: string; messages?: AgentMessageRecord[]; pending_action?: AgentActionRecord }
-export interface AgentStreamEvent { type: 'delta' | 'tool' | 'citation' | 'action' | 'done' | 'error'; text?: string; tool?: string; action?: AgentActionRecord; citation?: { source_type: string; source_id: string; quote: string }; code?: string }
+export interface AgentStreamEvent { type: 'delta' | 'tool' | 'citation' | 'action' | 'done' | 'error' | 'context' | 'context_invalidated' | 'memory_proposal'; proposal?: MemoryProposal; text?: string; tool?: string; action?: AgentActionRecord; citation?: { source_type: string; source_id: string; quote: string }; code?: string }
+
+export interface AgentMemory { id: string; scope: string; key: string; value: string | string[]; revision: number; content_hash: string; status: string; source_quote?: string; source_message_id?: string; updated_at: string }
+export interface MemorySnapshot { memories: AgentMemory[]; forgotten?: AgentMemory[]; epoch: { global: number; goal: number } }
+export interface MemoryProposal { id: string; conversation_id: string; key: string; value: string | string[]; before?: string | string[]; scope: string; source_quote: string; expected_revision: number; expected_hash: string; content_hash: string; status: string }
+export const memoryAPI = {
+ list: () => request<MemorySnapshot>('/api/v1/agent/memories'),
+ proposals: () => request<MemoryProposal[]>('/api/v1/agent/memory-proposals'),
+ save: (key: string, value: string | string[], existing?: AgentMemory) => request<AgentMemory>(existing ? `/api/v1/agent/memories/${existing.id}` : '/api/v1/agent/memories', { method: existing ? 'PATCH' : 'POST', body: JSON.stringify({ key, value, expected_revision: existing?.revision ?? 0, expected_hash: existing?.content_hash ?? '' }) }),
+ forget: (memory: AgentMemory) => request<void>(`/api/v1/agent/memories/${memory.id}`, { method: 'DELETE', body: JSON.stringify({ expected_revision: memory.revision, expected_hash: memory.content_hash }) }),
+ resolve: (proposal: MemoryProposal, approve: boolean, value?: string | string[]) => request<MemoryProposal>(`/api/v1/agent/memory-proposals/${proposal.id}/resolve`, { method: 'POST', body: JSON.stringify({ approve, content_hash: proposal.content_hash, value }) }),
+ history: (id: string, before: number) => request<{ messages: AgentMessageRecord[]; next_before_sequence?: number }>(`/api/v1/agent/conversations/${id}/messages?before_sequence=${before}`),
+}
 
 async function streamAgent(path: string, body: unknown, onEvent: (event: AgentStreamEvent) => void, mayRefresh = true): Promise<void> {
   const headers = new Headers({ 'Content-Type': 'application/json' })

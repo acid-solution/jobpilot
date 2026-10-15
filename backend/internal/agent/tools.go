@@ -8,6 +8,7 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
@@ -38,13 +39,16 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 	readTool, err := utils.InferTool("read_jobpilot", "只读查询当前用户有权限访问的 JobPilot 目标、JD、画像、材料、报告、任务与原文引用；需要原文证据时使用 source_search。", func(ctx context.Context, input readArgs) (string, error) {
 		emit(Event{Type: "tool", Tool: "read_jobpilot", Text: input.Resource})
 		var citations []any
-		result, readErr := s.read(runCtx, user, t, input, func(event Event) {
+		result, readErr := s.readWithContext(runCtx, user, t, input, func(event Event) {
 			if event.Type == "citation" && event.Citation != nil {
 				citations = append(citations, event.Citation)
 			}
 			emit(event)
 		})
 		if readErr != nil {
+			if errors.Is(readErr, target.ErrNotFound) {
+				return `{"status":"unavailable","code":"target_not_set","message":"尚未设置求职目标，因此没有可查询的当前目标报告或已选项目。"}`, nil
+			}
 			return "", readErr
 		}
 		if len(citations) > 0 {
@@ -134,6 +138,9 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 			proposalCtx, invalidate = mutationlock.WithHeldLock(runCtx, user)
 			defer invalidate()
 		}
+		if e := s.checkContext(proposalCtx); e != nil {
+			return "", e
+		}
 		if input.Kind == "route_import" {
 			if s.Learning == nil {
 				return "", errors.New("学习路线尚未启用")
@@ -179,7 +186,11 @@ func (s *Service) tools(runCtx context.Context, user, conversation uuid.UUID, sc
 	if err != nil {
 		return nil, err
 	}
-	return []tool.BaseTool{readTool, writeTool}, nil
+	extra, err := s.contextTools(runCtx)
+	if err != nil {
+		return nil, err
+	}
+	return append([]tool.BaseTool{readTool, writeTool}, extra...), nil
 }
 
 // Called only by the resumed write tool after an explicit user approval.
@@ -190,7 +201,12 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 	var outcome Event
 	var outcomeErr error
 	var external *learningroutes.ImportRequest
+	var refreshed map[string]int64
+	var refreshedGoal string
 	err := s.Transactions.WithinUserTransaction(ctx, user, func(txCtx context.Context) error {
+		if e := s.checkContext(txCtx); e != nil {
+			return e
+		}
 		// The transaction holds the same account advisory lock used by page and
 		// worker mutations. Every repository call below reuses its connection.
 		stale := func() error {
@@ -262,6 +278,20 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 		if err := s.Repo.FinishAction(txCtx, a.ID, "succeeded", marshal(value), ""); err != nil {
 			return err
 		}
+		if state := agentcontext.From(ctx); state != nil {
+			keys := []string{}
+			for key := range state.Dependencies() {
+				keys = append(keys, key)
+			}
+			refreshed, err = s.ContextRepo.Versions(txCtx, user, keys)
+			if err != nil {
+				return err
+			}
+			refreshedGoal, err = s.memoryGoal(txCtx, user)
+			if err != nil {
+				return err
+			}
+		}
 		outcome = Event{Type: "tool", Tool: a.Kind, Text: "已执行"}
 		return nil
 	})
@@ -272,6 +302,9 @@ func (s *Service) executeApprovedAction(ctx context.Context, user, conversationI
 	}
 	if external != nil {
 		return s.finishExternalRoute(ctx, user, a, *external, emit)
+	}
+	if refreshed != nil {
+		agentcontext.From(ctx).AcceptMutation(refreshed, refreshedGoal)
 	}
 	emit(outcome)
 	return outcomeErr
@@ -289,18 +322,18 @@ func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in
 				return "", e
 			}
 			v, e := s.Learning.GetImport(ctx, user, id)
-			return compact(v), e
+			return string(marshal(v)), e
 		}
 		v, e := s.Learning.Get(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "target":
 		if t == nil {
 			return "尚未设置求职目标", nil
 		}
-		return compact(t), nil
+		return string(marshal(t)), nil
 	case "job_catalog":
 		v, e := s.Targets.Catalog(ctx)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "jd_list", "task_status":
 		v, e := s.Market.ListCurrent(ctx, user, market.ListFilter{})
 		if e != nil {
@@ -313,25 +346,25 @@ func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in
 			return "", e
 		}
 		v, e := s.Market.Detail(ctx, user, id)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "market_profile":
 		v, e := s.Market.ProfileCurrent(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "user_profile":
 		v, e := s.Profile.GetOverview(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "profile_settings":
 		v, e := s.Profile.GetSettings(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "materials":
 		v, e := s.Profile.ListMaterials(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "knowledge_gaps":
 		v, e := s.Gaps.Get(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "recommendations":
 		v, e := s.Projects.Get(ctx, user)
-		return compact(v), e
+		return string(marshal(v)), e
 	case "source_search":
 		if t == nil {
 			return "请先设置求职目标", nil
@@ -357,7 +390,7 @@ func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in
 		for _, match := range matches {
 			emit(Event{Type: "citation", Citation: match})
 		}
-		return compact(matches), nil
+		return string(marshal(matches)), nil
 	default:
 		return "", errors.New("unknown read resource")
 	}
@@ -382,7 +415,7 @@ func summarizeJDList(jds []market.JobDescription) string {
 			ValidationStatus: string(jd.ValidationStatus),
 		})
 	}
-	return compact(items)
+	return string(marshal(items))
 }
 func decode[T any](raw json.RawMessage) (T, error) {
 	var value T

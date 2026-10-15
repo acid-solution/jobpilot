@@ -182,6 +182,14 @@ func run() error {
 		}
 	}
 	var agentService httpapi.AgentService
+	var memoryAPI *agent.Service
+	memoryRepository := postgres.NewAssistantMemoryRepository(database)
+	if configuration.AgentContext.MemoryEnabled {
+		projectService.SetPreferences(memoryRepository)
+	}
+	if learningService != nil && configuration.AgentContext.MemoryEnabled {
+		learningService.SetPreferences(memoryRepository)
+	}
 	if configuration.AgentEnabled {
 		agentRepository := postgres.NewAgentRepository(database)
 		runtimeWorkers.Add(1)
@@ -200,7 +208,8 @@ func run() error {
 				}
 			}
 		}()
-		agentService = &agent.Service{
+		memoryAPI = &agent.Service{
+			ContextRepo: postgres.NewAgentContextRepository(database), Memories: memoryRepository, ContextConfig: configuration.AgentContext, SummaryModel: deepSeekClient,
 			ModelHTTP: deepSeekHTTP,
 			Learning:  learningService,
 			Repo:      agentRepository, Checkpoints: postgres.NewAgentCheckpointStore(database),
@@ -213,10 +222,12 @@ func run() error {
 			EmbeddingEnabled: configuration.EmbeddingEnabled,
 			DeepSeekBaseURL:  configuration.DeepSeekBaseURL,
 		}
+		agentService = memoryAPI
 	}
 
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		ModelUsage:                    usageRepository,
+		AgentMemoryService:            memoryAPI,
 		LearningRoutesService:         learningAPI,
 		AgentService:                  agentService,
 		MutationLocker:                mutationLocker,

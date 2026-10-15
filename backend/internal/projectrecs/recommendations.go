@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
@@ -76,12 +77,14 @@ type Project struct {
 	SearchedDirections []string    `json:"searched_directions"`
 }
 type Report struct {
-	ID            uuid.UUID `json:"id"`
-	TargetTitle   string    `json:"target_title"`
-	Projects      []Project `json:"projects"`
-	EmptyReason   string    `json:"empty_reason,omitempty"`
-	GeneratedAt   time.Time `json:"generated_at"`
-	PromptVersion string    `json:"prompt_version"`
+	Preferences          *assistantmemory.Snapshot `json:"preferences,omitempty"`
+	PreferenceAdjustment string                    `json:"preference_adjustment,omitempty"`
+	ID                   uuid.UUID                 `json:"id"`
+	TargetTitle          string                    `json:"target_title"`
+	Projects             []Project                 `json:"projects"`
+	EmptyReason          string                    `json:"empty_reason,omitempty"`
+	GeneratedAt          time.Time                 `json:"generated_at"`
+	PromptVersion        string                    `json:"prompt_version"`
 }
 type JobView struct {
 	ID              uuid.UUID  `json:"id"`
@@ -123,25 +126,27 @@ type UserAbility struct {
 	Source string `json:"source"`
 }
 type Input struct {
-	RequirementBasis   string          `json:"requirement_basis,omitempty"`
-	ExperienceBasis    string          `json:"experience_basis,omitempty"`
-	Goal               string          `json:"goal"`
-	EmploymentType     string          `json:"employment_type"`
-	GraduationYear     *int            `json:"graduation_year,omitempty"`
-	Directions         []string        `json:"directions"`
-	IncludedJDCount    int             `json:"included_jd_count"`
-	MarketAbilities    []MarketAbility `json:"market_abilities"`
-	UserAbilities      []UserAbility   `json:"user_abilities"`
-	WeeklyHours        int             `json:"weekly_hours"`
-	ExpectedWeeks      int             `json:"expected_weeks"`
-	ExistingExperience string          `json:"existing_experience"`
+	Preferences        *assistantmemory.Snapshot `json:"preferences,omitempty"`
+	RequirementBasis   string                    `json:"requirement_basis,omitempty"`
+	ExperienceBasis    string                    `json:"experience_basis,omitempty"`
+	Goal               string                    `json:"goal"`
+	EmploymentType     string                    `json:"employment_type"`
+	GraduationYear     *int                      `json:"graduation_year,omitempty"`
+	Directions         []string                  `json:"directions"`
+	IncludedJDCount    int                       `json:"included_jd_count"`
+	MarketAbilities    []MarketAbility           `json:"market_abilities"`
+	UserAbilities      []UserAbility             `json:"user_abilities"`
+	WeeklyHours        int                       `json:"weekly_hours"`
+	ExpectedWeeks      int                       `json:"expected_weeks"`
+	ExistingExperience string                    `json:"existing_experience"`
 }
 type Snapshot struct {
-	TargetID      uuid.UUID
-	GoalSignature string
-	SourceHash    string
-	Input         Input
-	Readiness     knowledgegaps.Readiness
+	BusinessSourceHash string
+	TargetID           uuid.UUID
+	GoalSignature      string
+	SourceHash         string
+	Input              Input
+	Readiness          knowledgegaps.Readiness
 }
 type Job struct {
 	ID            uuid.UUID
@@ -191,17 +196,20 @@ type ModelConfigReader interface {
 }
 
 type Service struct {
-	repo     Repository
-	targets  TargetReader
-	market   MarketReader
-	profiles ProfileReader
-	gaps     GapReader
-	models   ModelConfigReader
+	preferences assistantmemory.Provider
+	repo        Repository
+	targets     TargetReader
+	market      MarketReader
+	profiles    ProfileReader
+	gaps        GapReader
+	models      ModelConfigReader
 }
 
 func NewService(repo Repository, targets TargetReader, market MarketReader, profiles ProfileReader, gaps GapReader, models ModelConfigReader) *Service {
-	return &Service{repo, targets, market, profiles, gaps, models}
+	return &Service{repo: repo, targets: targets, market: market, profiles: profiles, gaps: gaps, models: models}
 }
+func (s *Service) SetPreferences(p assistantmemory.Provider) { s.preferences = p }
+
 func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, error) {
 	t, err := s.targets.Current(ctx, userID)
 	if errors.Is(err, target.ErrNotFound) {
@@ -310,12 +318,25 @@ func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, err
 	}
 	sort.Slice(input.MarketAbilities, func(i, j int) bool { return input.MarketAbilities[i].Name < input.MarketAbilities[j].Name })
 	sort.Slice(input.UserAbilities, func(i, j int) bool { return input.UserAbilities[i].Name < input.UserAbilities[j].Name })
+	businessRaw, _ := json.Marshal(struct {
+		ProfileInput       Input
+		MarketRequirements string
+	}{input, g.SourceFingerprint})
+	businessSum := sha256.Sum256(businessRaw)
+	if s.preferences != nil {
+		prefs, e := s.preferences.Snapshot(ctx, userID, target.GoalSignature(t))
+		if e != nil {
+			return Snapshot{}, e
+		}
+		relevant := assistantmemory.Relevant(prefs, "recommendations")
+		input.Preferences = &relevant
+	}
 	raw, _ := json.Marshal(struct {
 		ProfileInput       Input
 		MarketRequirements string
 	}{input, g.SourceFingerprint})
 	hash := sha256.Sum256(raw)
-	return Snapshot{TargetID: t.ID, GoalSignature: knowledgegaps.GoalSignature(t), SourceHash: hex.EncodeToString(hash[:]), Input: input, Readiness: r}, nil
+	return Snapshot{BusinessSourceHash: hex.EncodeToString(businessSum[:]), TargetID: t.ID, GoalSignature: knowledgegaps.GoalSignature(t), SourceHash: hex.EncodeToString(hash[:]), Input: input, Readiness: r}, nil
 }
 
 func (s *Service) validateJobInputs(ctx context.Context, job Job) error {
@@ -423,6 +444,7 @@ func ValidateDraft(d Draft) error {
 // Generation still uses SourceHash and final transactional validation. This
 // separate hash is only the dependency boundary of a published project choice.
 func ProjectContextHash(input Input) string {
+	input.Preferences = nil
 	input.UserAbilities = nil
 	input.MarketAbilities = append([]MarketAbility{}, input.MarketAbilities...)
 	for i := range input.MarketAbilities {

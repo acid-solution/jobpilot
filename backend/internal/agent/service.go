@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/embedding"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
@@ -83,6 +85,12 @@ type SourceMatch struct {
 }
 
 type Service struct {
+	ContextRepo   agentcontext.Repository
+	Memories      assistantmemory.Repository
+	ContextConfig agentcontext.Config
+	SummaryModel  interface {
+		GenerateJSON(context.Context, string, string, string, string, any) error
+	}
 	ModelHTTP        *http.Client
 	Learning         *learningroutes.Service
 	Repo             Repository
@@ -150,7 +158,7 @@ func (s *Service) Create(ctx context.Context, user uuid.UUID, page string) (Conv
 		return v, err
 	}
 	welcome := s.nextStep(ctx, user, page, t)
-	_, err = s.Repo.AddMessage(ctx, v.ID, "assistant", welcome)
+	_, err = s.Repo.AddMessage(agentcontext.WithMessageKind(ctx, "welcome"), v.ID, "assistant", welcome)
 	if err != nil {
 		return v, err
 	}

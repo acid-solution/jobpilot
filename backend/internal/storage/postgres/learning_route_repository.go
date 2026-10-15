@@ -48,8 +48,8 @@ func (r *LearningRouteRepository) Get(ctx context.Context, user uuid.UUID, goal 
 		return nil, nil, nil, err
 	}
 	var v learningroutes.Version
-	var cfg, plans []byte
-	err = r.db.QueryRowContext(ctx, `SELECT v.id,v.route_id,v.version_no,v.revision,v.source_hash,v.knowledge_hash,v.config,v.plans,v.generated_at FROM learning_route_versions v JOIN learning_routes r ON r.id=v.route_id WHERE r.id=$1 AND v.version_no=r.current_version`, route).Scan(&v.ID, &v.RouteID, &v.Number, &v.Revision, &v.SourceHash, &v.KnowledgeHash, &cfg, &plans, &v.GeneratedAt)
+	var cfg, plans, preferences []byte
+	err = r.db.QueryRowContext(ctx, `SELECT v.id,v.route_id,v.version_no,v.revision,v.source_hash,v.knowledge_hash,v.config,v.plans,v.generated_at,v.preference_basis,v.preference_adjustment FROM learning_route_versions v JOIN learning_routes r ON r.id=v.route_id WHERE r.id=$1 AND v.version_no=r.current_version`, route).Scan(&v.ID, &v.RouteID, &v.Number, &v.Revision, &v.SourceHash, &v.KnowledgeHash, &cfg, &plans, &v.GeneratedAt, &preferences, &v.PreferenceAdjustment)
 	var version *learningroutes.Version
 	if err == nil {
 		if e := json.Unmarshal(cfg, &v.Config); e != nil {
@@ -57,6 +57,11 @@ func (r *LearningRouteRepository) Get(ctx context.Context, user uuid.UUID, goal 
 		}
 		if e := json.Unmarshal(plans, &v.Plans); e != nil {
 			return nil, nil, nil, e
+		}
+		if len(preferences) > 0 {
+			if e := json.Unmarshal(preferences, &v.Preferences); e != nil {
+				return nil, nil, nil, e
+			}
 		}
 		version = &v
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -123,7 +128,7 @@ func (r *LearningRouteRepository) Edit(ctx context.Context, user uuid.UUID, inpu
 	// Once imported, editing creates a new route snapshot rather than mutating
 	// the provenance of an execution version already visible in StudyFlow.
 	if imported {
-		_, err = r.db.ExecContext(ctx, `INSERT INTO learning_route_versions(route_id,version_no,source_hash,knowledge_hash,config,plans)VALUES($1,$2,$3,$4,$5,$6)`, route, number+1, projectHash, knowledgeHash, cfg, plans)
+		_, err = r.db.ExecContext(ctx, `INSERT INTO learning_route_versions(route_id,version_no,source_hash,knowledge_hash,config,plans,preference_basis,preference_adjustment) SELECT $1,$2,$3,$4,$5,$6,preference_basis,preference_adjustment FROM learning_route_versions WHERE id=$7`, route, number+1, projectHash, knowledgeHash, cfg, plans, input.VersionID)
 		if err != nil {
 			return err
 		}
@@ -210,7 +215,7 @@ func (r *LearningRouteRepository) Complete(ctx context.Context, j learningroutes
 		}
 		cfg, _ := json.Marshal(j.Input.Config)
 		raw, _ := json.Marshal(plans)
-		_, err = r.db.ExecContext(txCtx, `INSERT INTO learning_route_versions(route_id,version_no,source_hash,knowledge_hash,config,plans)VALUES($1,$2,$3,$4,$5,$6)`, j.RouteID, version+1, j.Input.ProjectHash, j.Input.KnowledgeHash, cfg, raw)
+		_, err = r.db.ExecContext(txCtx, `INSERT INTO learning_route_versions(route_id,version_no,source_hash,knowledge_hash,config,plans,preference_basis,preference_adjustment)VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, j.RouteID, version+1, j.Input.ProjectHash, j.Input.KnowledgeHash, cfg, raw, nullableJSON(marshalPreference(j.Input.Preferences)), j.Input.Adjustment)
 		if err != nil {
 			return err
 		}
@@ -288,4 +293,12 @@ func (r *LearningRouteRepository) FinishImport(ctx context.Context, request lear
 	}
 	result, err := r.db.ExecContext(ctx, `UPDATE learning_route_import_requests SET status=$3,receipt=$4,error_code=$5,dispatch_token=NULL,dispatch_expires_at=NULL,updated_at=now() WHERE id=$1 AND dispatch_token=$2 AND status='sending'`, request.ID, request.DispatchToken, status, raw, code)
 	return routeLeaseResult(result, err)
+}
+
+func marshalPreference(v any) json.RawMessage {
+	if v == nil {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return b
 }

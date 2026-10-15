@@ -105,7 +105,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	return true, nil
 }
 func (w *Worker) pipeline(ctx context.Context, job Job, creds modelconfig.Credentials) (Report, error) {
-	report := Report{ID: uuid.New(), TargetTitle: job.Input.Goal, Projects: []Project{}, GeneratedAt: time.Now().UTC(), PromptVersion: PromptVersion}
+	report := Report{Preferences: job.Input.Preferences, PreferenceAdjustment: job.Adjustment, ID: uuid.New(), TargetTitle: job.Input.Goal, Projects: []Project{}, GeneratedAt: time.Now().UTC(), PromptVersion: PromptVersion}
 	drafts := job.Drafts
 	if job.Phase == "draft" {
 		var empty string

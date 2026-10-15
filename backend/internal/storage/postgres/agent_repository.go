@@ -8,10 +8,18 @@ import (
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
 	"github.com/google/uuid"
 )
 
 type AgentRepository struct{ db *repositoryDatabase }
+
+// Display history stays visible, but it must not look like verified current
+// analysis after its dependencies or forgetting epoch have changed.
+const agentMessageStaleSQL = `m.role='assistant' AND m.kind NOT IN('welcome','notification') AND (t.id IS NULL OR t.status NOT IN('completed','awaiting_confirmation')
+ OR t.global_epoch<>COALESCE((SELECT epoch FROM agent_context_scopes WHERE user_id=t.user_id AND scope='global'),0)
+ OR t.goal_epoch<>COALESCE((SELECT epoch FROM agent_context_scopes WHERE user_id=t.user_id AND scope=t.goal_key),0)
+ OR EXISTS(SELECT 1 FROM jsonb_each_text(t.dependencies) d WHERE d.value::bigint<>COALESCE((SELECT version FROM resource_versions WHERE user_id=t.user_id AND resource_key=d.key),0)))`
 
 func NewAgentRepository(db *sql.DB) *AgentRepository {
 	return &AgentRepository{db: newRepositoryDatabase(db)}
@@ -28,8 +36,8 @@ func (r *AgentRepository) RecoverRuns(ctx context.Context) error {
 		FROM agent_conversations c WHERE a.conversation_id=c.id AND a.status='executing'
 		  AND c.status='running' AND c.run_expires_at<NOW()
 			RETURNING a.conversation_id,a.summary,a.result
-	) INSERT INTO agent_messages(conversation_id,role,content)
-	  SELECT conversation_id,'assistant',
+	) INSERT INTO agent_messages(conversation_id,role,kind,content)
+	  SELECT conversation_id,'assistant','notification',
 		    '操作“'||summary||'”执行中断，结果尚不能确认。请先在相应页面核对实际资料，再决定是否重新发起。'||CASE WHEN result->>'import_request_id' IS NOT NULL THEN ' 学习路线导入请求编号：'||(result->>'import_request_id') ELSE '' END
 	  FROM interrupted`)
 	if err != nil {
@@ -43,6 +51,12 @@ func (r *AgentRepository) RecoverRuns(ctx context.Context) error {
 	_, err = tx.ExecContext(ctx, `UPDATE agent_conversations c SET status=CASE WHEN EXISTS(SELECT 1 FROM agent_actions a WHERE a.conversation_id=c.id AND a.status='pending') THEN 'awaiting_confirmation' ELSE 'idle' END,
 		run_token=NULL,run_expires_at=NULL,updated_at=NOW() WHERE c.status='running' AND c.run_expires_at<NOW()`)
 	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE agent_turns t SET status=CASE WHEN c.status='awaiting_confirmation' THEN 'awaiting_confirmation' ELSE 'failed' END,finished_at=now() FROM agent_conversations c WHERE t.conversation_id=c.id AND t.status='running' AND c.status<>'running'`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM agent_context_artifacts WHERE id IN(SELECT id FROM agent_context_artifacts WHERE expires_at<now() LIMIT 500)`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -78,17 +92,18 @@ func (r *AgentRepository) Get(ctx context.Context, user uuid.UUID, scope string,
 	if err != nil {
 		return v, err
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT id,role,content,created_at FROM (
-		SELECT id,role,content,created_at FROM agent_messages WHERE conversation_id=$1
-		ORDER BY created_at DESC,id DESC LIMIT 200
-	) recent ORDER BY created_at,id`, id)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,role,content,created_at,sequence,kind,context_stale FROM (
+		SELECT m.id,m.role,m.content,m.created_at,m.sequence,m.kind,`+agentMessageStaleSQL+` AS context_stale
+        FROM agent_messages m LEFT JOIN agent_turns t ON m.turn_id=t.id WHERE m.conversation_id=$1
+		ORDER BY m.sequence DESC LIMIT 200
+	) recent ORDER BY sequence`, id)
 	if err != nil {
 		return v, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var m agent.Message
-		if err = rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		if err = rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt, &m.Sequence, &m.Kind, &m.ContextStale); err != nil {
 			return v, err
 		}
 		v.Messages = append(v.Messages, m)
@@ -194,7 +209,18 @@ func (r *AgentRepository) HeartbeatRun(ctx context.Context, id, token uuid.UUID)
 }
 func (r *AgentRepository) AddMessage(ctx context.Context, conversation uuid.UUID, role, content string) (agent.Message, error) {
 	var m agent.Message
-	err := r.db.QueryRowContext(ctx, `INSERT INTO agent_messages(conversation_id,role,content) VALUES($1,$2,$3) RETURNING id,role,content,created_at`, conversation, role, content).Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt)
+	if state := agentcontext.From(ctx); state != nil {
+		t := state.Turn
+		err := r.db.QueryRowContext(ctx, `WITH held AS (SELECT id FROM agent_conversations WHERE id=$1 AND run_token=$5 AND status='running' AND run_expires_at>now() FOR UPDATE)
+   INSERT INTO agent_messages(conversation_id,role,content,kind,turn_id) SELECT $1,$2,$3,'normal',$4 FROM held WHERE true
+   AND COALESCE((SELECT epoch FROM agent_context_scopes WHERE user_id=$6 AND scope='global'),0)=$7
+   AND COALESCE((SELECT epoch FROM agent_context_scopes WHERE user_id=$6 AND scope=$8),0)=$9 RETURNING id,role,content,created_at`, conversation, role, content, t.ID, t.Token, t.UserID, t.Epoch.Global, t.Goal, t.Epoch.Goal).Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return m, agentcontext.ErrChanged
+		}
+		return m, err
+	}
+	err := r.db.QueryRowContext(ctx, `INSERT INTO agent_messages(conversation_id,role,content,kind) VALUES($1,$2,$3,$4) RETURNING id,role,content,created_at`, conversation, role, content, agentcontext.MessageKind(ctx)).Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt)
 	if err == nil {
 		_, _ = r.db.ExecContext(ctx, `UPDATE agent_conversations SET title=CASE WHEN title='新对话' AND $2='user' THEN LEFT($3,24) ELSE title END,updated_at=NOW() WHERE id=$1`, conversation, role, content)
 	}

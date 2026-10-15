@@ -1,3 +1,4 @@
+import { GenerationPreferences } from '../components/GenerationPreferences'
 import { useCallback, useEffect, useState } from 'react'
 import { jobPilotAPI, type LearningRouteConfig, type LearningRouteVersion, type LearningRouteView } from '../api'
 import type { LearningPlanConfig, LearningStage, LearningTask } from '../learningRouteTypes'
@@ -57,7 +58,7 @@ export function LearningRoutePanel({ onOpenProjects }: { onOpenProjects?: () => 
     <p>{editing ? '这里修改的是当前预览的时间配置，保存后生效。' : '以下时间配置用于下一次生成；导入使用已保存的路线配置。'}</p>
     <div className="route-budget-grid"><Budget name="项目实践计划" value={config.project} disabled={busy || frozen} onChange={v => setBudget('project', v)} /><Budget name="知识准备计划" value={config.knowledge} disabled={busy || frozen} onChange={v => setBudget('knowledge', v)} /></div>
     {overBudget && <p role="alert">预算超过每周总投入，请调整后再生成。</p>}
-    <label className="route-adjustment">本次调整意见（可选）<textarea value={adjustment} onChange={e => setAdjustment(e.target.value)} maxLength={1000} placeholder="例如优先完成可演示主流程，知识任务侧重面试复习" /></label>
+    <GenerationPreferences purpose="route" basis={view?.version?.preferences} adjustment={view?.version?.preference_adjustment}/><label className="route-adjustment">本次调整意见（可选）<textarea value={adjustment} onChange={e => setAdjustment(e.target.value)} maxLength={1000} placeholder="例如优先完成可演示主流程，知识任务侧重面试复习" /></label>
     <div className="route-actions"><button className="button button-primary" disabled={!canGenerate || editing} onClick={() => void generate(false)}>{view?.version ? '重新生成两份计划' : '生成学习路线'}</button>{view?.version && <button className="button" disabled={!canGenerate || editing} onClick={() => void generate(true)}>更新知识计划</button>}</div>
     {running(view?.job?.status) && <div className="recommendation-progress" role="status"><h3>{view?.job?.status === 'queued' ? '等待后台生成' : '正在拆解阶段与任务'}</h3><p>按两份预算组织内容、检查完成标准，并安排日期。第 {view?.job?.attempts || 1} 次尝试，完成后自动显示预览。</p></div>}
     {view?.job?.status === 'failed' && <div className="market-notice" role="alert">{view.job.error_code === 'inputs_changed' ? '生成期间画像或项目变化，请重新生成。' : view.job.error_message?.replace(/^invalid learning route:\s*/, '') || '生成未完成，请检查预算和范围后重试；旧路线已保留。'}</div>}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"sort"
 	"strings"
 
@@ -29,6 +30,7 @@ type Credentials interface {
 	Credentials(context.Context, uuid.UUID) (modelconfig.Credentials, error)
 }
 type Service struct {
+	preferences assistantmemory.Provider
 	repo        Repository
 	projects    Projects
 	gaps        Gaps
@@ -38,12 +40,13 @@ type Service struct {
 	webURL      string
 }
 
+func (s *Service) SetPreferences(p assistantmemory.Provider) { s.preferences = p }
 func (s *Service) GetImport(ctx context.Context, user, id uuid.UUID) (ImportRequest, error) {
 	return s.repo.FindImport(ctx, user, id)
 }
 
 func NewService(repo Repository, projects Projects, gaps Gaps, profiles Profiles, creds Credentials, remote Remote, web string) *Service {
-	return &Service{repo, projects, gaps, profiles, creds, remote, strings.TrimRight(web, "/")}
+	return &Service{repo: repo, projects: projects, gaps: gaps, profiles: profiles, credentials: creds, remote: remote, webURL: strings.TrimRight(web, "/")}
 }
 
 func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error) {
@@ -51,6 +54,7 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 	if err != nil {
 		return Snapshot{}, err
 	}
+	source.Input.Preferences = nil
 	result := Snapshot{TargetID: source.TargetID, GoalSignature: source.GoalSignature, Readiness: source.Readiness, Input: Input{Profile: source.Input}}
 	if source.GoalSignature == "" {
 		return result, nil
@@ -99,7 +103,7 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 		Project   string
 		Knowledge string
 		Standards string
-	}{source.SourceHash, result.ReportID, result.ProjectID, gaps.SourceFingerprint, Hash(result.Input.Standards)})
+	}{businessSource(source), result.ReportID, result.ProjectID, gaps.SourceFingerprint, Hash(result.Input.Standards)})
 	return result, nil
 }
 func (s *Service) Get(ctx context.Context, user uuid.UUID) (View, error) {
@@ -153,6 +157,18 @@ func (s *Service) Generate(ctx context.Context, user uuid.UUID, request Generate
 		version, _, _, err := s.repo.Get(txCtx, user, ss.GoalSignature, ss.ReportID, ss.ProjectID)
 		if err != nil {
 			return err
+		}
+		if s.preferences != nil {
+			prefs, e := s.preferences.Snapshot(txCtx, user, ss.GoalSignature)
+			if e != nil {
+				return e
+			}
+			purpose := "route"
+			if request.KnowledgeOnly {
+				purpose = "knowledge"
+			}
+			relevant := assistantmemory.Relevant(prefs, purpose)
+			ss.Input.Preferences = &relevant
 		}
 		ss.Input.Config = request.Config
 		ss.Input.KnowledgeOnly = request.KnowledgeOnly
@@ -358,4 +374,29 @@ func copyPlans(plans []Plan) []Plan {
 	var out []Plan
 	_ = json.Unmarshal(raw, &out)
 	return out
+}
+
+func businessSource(ss projectrecs.Snapshot) string {
+	if ss.BusinessSourceHash != "" {
+		return ss.BusinessSourceHash
+	}
+	return ss.SourceHash
+}
+func (s *Service) validatePreferences(ctx context.Context, job Job) error {
+	if s.preferences == nil || job.Input.Preferences == nil {
+		return nil
+	}
+	prefs, e := s.preferences.Snapshot(ctx, job.UserID, job.GoalSignature)
+	if e != nil {
+		return e
+	}
+	purpose := "route"
+	if job.Input.KnowledgeOnly {
+		purpose = "knowledge"
+	}
+	current := assistantmemory.Relevant(prefs, purpose)
+	if assistantmemory.Fingerprint(current) != assistantmemory.Fingerprint(*job.Input.Preferences) {
+		return ErrInputsChanged
+	}
+	return nil
 }

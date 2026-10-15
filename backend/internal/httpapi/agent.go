@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -36,6 +37,10 @@ func agentID(c *gin.Context, param string) (uuid.UUID, bool) {
 }
 func agentError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, agentcontext.ErrChanged):
+		writeError(c, http.StatusConflict, "context_changed", "资料或记忆已变化，请重新提出请求")
+	case errors.Is(err, agentcontext.ErrBudget):
+		writeError(c, http.StatusBadRequest, "context_too_large", "本次请求和必要执行内容超过上下文预算，请缩小输入")
 	case errors.Is(err, agent.ErrNotFound):
 		writeError(c, http.StatusNotFound, "not_found", "对话或操作不存在")
 	case errors.Is(err, agent.ErrBusy):
@@ -183,6 +188,15 @@ func streamAgent(c *gin.Context, run func(func(agent.Event)) error) {
 	}
 	if e := run(emit); e != nil {
 		slog.Error("agent stream failed", "error", e)
-		emit(agent.Event{Type: "error", Code: "agent_failed", Text: e.Error()})
+		text, code := e.Error(), "agent_failed"
+		if errors.Is(e, agentcontext.ErrChanged) {
+			text = "资料或记忆已变化，请重新提出请求"
+			code = "context_changed"
+		}
+		if errors.Is(e, agentcontext.ErrBudget) {
+			text = "本次输入与必要执行内容超过上下文预算，请缩小输入"
+			code = "context_too_large"
+		}
+		emit(agent.Event{Type: "error", Code: code, Text: text})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
@@ -74,6 +75,7 @@ type ProjectRecommendationsService interface {
 }
 
 type Dependencies struct {
+	AgentMemoryService            *agent.Service
 	ModelUsage                    modelusage.Repository
 	LearningRoutesService         LearningRoutesService
 	AgentService                  AgentService
@@ -118,6 +120,9 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 		api.Use(serializeUserMutations(dependencies.MutationLocker))
 	}
 	{
+		if dependencies.AgentMemoryService != nil {
+			registerAgentMemory(api, dependencies.AgentMemoryService)
+		}
 		if dependencies.LearningRoutesService != nil {
 			registerLearningRoutes(api, dependencies.LearningRoutesService)
 		}

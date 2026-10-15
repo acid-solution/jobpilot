@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
@@ -167,6 +168,9 @@ func TestConfirmedAgentActionTransactionIsolated(t *testing.T) {
 			defer provider.Close()
 			repo := NewAgentRepository(db)
 			s := &agent.Service{Repo: repo, Transactions: repo, Checkpoints: NewAgentCheckpointStore(db), Targets: targets, Market: markets, Profile: profiles, Credentials: transactionTestCredentials{}, DeepSeekBaseURL: provider.URL}
+			s.ContextRepo = NewAgentContextRepository(db)
+			s.Memories = NewAssistantMemoryRepository(db)
+			s.ContextConfig = agentcontext.DefaultConfig()
 			conversation, err := s.Create(ctx, user, "profile")
 			if err != nil {
 				t.Fatal(err)

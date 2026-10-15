@@ -3,6 +3,7 @@ package learningroutes
 import (
 	"context"
 	"errors"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
 	"github.com/google/uuid"
@@ -61,16 +62,18 @@ type Plan struct {
 	PathReasons   []string     `json:"path_reasons,omitempty"`
 }
 type Version struct {
-	ContentHash   string    `json:"content_hash"`
-	ID            uuid.UUID `json:"id"`
-	RouteID       uuid.UUID `json:"route_id"`
-	Number        int       `json:"version_no"`
-	Revision      int64     `json:"revision"`
-	SourceHash    string    `json:"-"`
-	KnowledgeHash string    `json:"-"`
-	Config        Config    `json:"config"`
-	Plans         []Plan    `json:"plans"`
-	GeneratedAt   time.Time `json:"generated_at"`
+	Preferences          *assistantmemory.Snapshot `json:"preferences,omitempty"`
+	PreferenceAdjustment string                    `json:"preference_adjustment,omitempty"`
+	ContentHash          string                    `json:"content_hash"`
+	ID                   uuid.UUID                 `json:"id"`
+	RouteID              uuid.UUID                 `json:"route_id"`
+	Number               int                       `json:"version_no"`
+	Revision             int64                     `json:"revision"`
+	SourceHash           string                    `json:"-"`
+	KnowledgeHash        string                    `json:"-"`
+	Config               Config                    `json:"config"`
+	Plans                []Plan                    `json:"plans"`
+	GeneratedAt          time.Time                 `json:"generated_at"`
 }
 type JobView struct {
 	ErrorMessage string    `json:"error_message,omitempty"`
@@ -129,16 +132,17 @@ type AbilityStandard struct {
 	Levels any    `json:"levels"`
 }
 type Input struct {
-	Profile       projectrecs.Input    `json:"profile"`
-	Project       projectrecs.Project  `json:"project"`
-	Standards     []AbilityStandard    `json:"standards"`
-	Knowledge     knowledgegaps.Report `json:"knowledge"`
-	Config        Config               `json:"config"`
-	Previous      []Plan               `json:"previous,omitempty"`
-	KnowledgeOnly bool                 `json:"knowledge_only"`
-	Adjustment    string               `json:"adjustment,omitempty"`
-	KnowledgeHash string               `json:"knowledge_hash"`
-	ProjectHash   string               `json:"project_hash"`
+	Preferences   *assistantmemory.Snapshot `json:"preferences,omitempty"`
+	Profile       projectrecs.Input         `json:"profile"`
+	Project       projectrecs.Project       `json:"project"`
+	Standards     []AbilityStandard         `json:"standards"`
+	Knowledge     knowledgegaps.Report      `json:"knowledge"`
+	Config        Config                    `json:"config"`
+	Previous      []Plan                    `json:"previous,omitempty"`
+	KnowledgeOnly bool                      `json:"knowledge_only"`
+	Adjustment    string                    `json:"adjustment,omitempty"`
+	KnowledgeHash string                    `json:"knowledge_hash"`
+	ProjectHash   string                    `json:"project_hash"`
 }
 type Snapshot struct {
 	TargetID      uuid.UUID

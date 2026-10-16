@@ -75,8 +75,9 @@ if ! compose up -d --no-deps --no-build --wait --wait-timeout 180 "$service"; th
   printf '%s FAILED %s %s previous=%s backup=%s\n' "$release_id" "$application" "$image" "$previous" "$backup" >> "$state/history.log"
   fail "Deployment failed. Private log: $state/$release_id.failed.log . Review database compatibility before deploying the previous image: $previous"
 fi
-if ! compose exec -T "$service" wget -q --spider "http://127.0.0.1:$port/health/ready" ||
-   ! compose exec -T "$service" wget -q --spider "http://127.0.0.1:$port/"; then
+# Use GET: the JobPilot readiness route does not accept HEAD requests.
+if ! compose exec -T "$service" wget -q -T 10 -O /dev/null "http://127.0.0.1:$port/health/ready" ||
+   ! compose exec -T "$service" wget -q -T 10 -O /dev/null "http://127.0.0.1:$port/"; then
   compose logs --no-color --tail 100 "$service" > "$state/$release_id.failed.log" 2>&1 || true
   printf '%s FAILED_SMOKE %s %s previous=%s backup=%s\n' "$release_id" "$application" "$image" "$previous" "$backup" >> "$state/history.log"
   fail "Post-deployment checks failed. Previous pinned configuration retained; inspect $state/$release_id.failed.log before recovery."

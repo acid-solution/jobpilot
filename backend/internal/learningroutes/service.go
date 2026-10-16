@@ -55,16 +55,37 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 		return Snapshot{}, err
 	}
 	source.Input.Preferences = nil
-	result := Snapshot{TargetID: source.TargetID, GoalSignature: source.GoalSignature, Readiness: source.Readiness, Input: Input{Profile: source.Input}}
+	result := Snapshot{TargetID: source.TargetID, GoalSignature: source.GoalSignature, Readiness: source.Readiness, Input: Input{Profile: source.Input}, Preparation: Preparation{RequiredJDCount: 10, IncludedJDCount: source.Input.IncludedJDCount}}
 	if source.GoalSignature == "" {
 		return result, nil
+	}
+	overview, err := s.profiles.GetOverview(ctx, user)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	result.Preparation.MarketComplete = overview.MarketProfileReady && source.Input.IncludedJDCount >= result.Preparation.RequiredJDCount
+	result.Preparation.ProfileComplete = overview.Complete && source.Input.WeeklyHours > 0 && source.Input.ExpectedWeeks > 0 && source.Input.ExistingExperience != ""
+	result.Preparation.AnalysisReady = result.Preparation.MarketComplete && analysisReady(source.Readiness)
+	if result.Readiness.Code == "ready" && !result.Preparation.MarketComplete {
+		result.Readiness.Code, result.Readiness.Message = "market_incomplete", "请先完成市场画像采集"
+	}
+	if result.Readiness.Code == "ready" && !result.Preparation.ProfileComplete {
+		result.Readiness.Code, result.Readiness.Message = "profile_incomplete", "请先完成用户画像与必要信息"
+	}
+	if result.Readiness.Code == "ready" && !result.Preparation.AnalysisReady {
+		result.Readiness.Code, result.Readiness.Message = "grading_pending", "请先等待相关 JD 判级完成"
+		if source.Readiness.PendingReviewCount > 0 || source.Readiness.FailedReviewCount > 0 {
+			result.Readiness.Code, result.Readiness.Message = "ability_review_pending", "请先完成相关能力目录审核"
+		}
 	}
 	projects, err := s.projects.Get(ctx, user)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if projects.Report == nil || projects.SelectedProjectID == "" {
-		result.Readiness = knowledgegaps.Readiness{Code: "project_missing", Message: "请先选择项目"}
+		if result.Readiness.Code == "ready" {
+			result.Readiness.Code, result.Readiness.Message = "project_missing", "请先生成项目推荐并选择一个项目"
+		}
 		return result, nil
 	}
 	result.ReportID = projects.Report.ID
@@ -77,20 +98,29 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 	if result.Input.Project.ID == "" {
 		return Snapshot{}, ErrNotFound
 	}
-	if projects.SelectionNeedsReview {
-		result.Readiness = knowledgegaps.Readiness{Code: "project_stale", Message: "项目依据已变化，请先重新核对项目推荐"}
-	}
+	result.Preparation.ProjectSelected = true
+	result.Preparation.ProjectNeedsReview = projects.SelectionNeedsReview
 	gaps, err := s.gaps.CurrentComparison(ctx, user)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	result.Preparation.AnalysisReady = result.Preparation.AnalysisReady && analysisReady(gaps.Readiness)
+	if result.Readiness.Code == "ready" && gaps.Readiness.Code != "ready" {
+		result.Readiness = gaps.Readiness
+	}
+	if result.Readiness.Code == "ready" && !result.Preparation.AnalysisReady {
+		result.Readiness = gaps.Readiness
+		result.Readiness.Code, result.Readiness.Message = "grading_pending", "请先等待相关 JD 判级完成"
+		if gaps.Readiness.PendingReviewCount > 0 || gaps.Readiness.FailedReviewCount > 0 {
+			result.Readiness.Code, result.Readiness.Message = "ability_review_pending", "请先完成相关能力目录审核"
+		}
+	}
+	if result.Readiness.Code == "ready" && projects.SelectionNeedsReview {
+		result.Readiness.Code, result.Readiness.Message = "project_stale", "项目依据已变化，请先重新核对项目推荐"
+	}
 	result.Input.KnowledgeHash = gaps.SourceFingerprint
 	if gaps.Report != nil {
 		result.Input.Knowledge = *gaps.Report
-	}
-	overview, err := s.profiles.GetOverview(ctx, user)
-	if err != nil {
-		return Snapshot{}, err
 	}
 	for _, a := range overview.Capabilities {
 		result.Input.Standards = append(result.Input.Standards, AbilityStandard{Name: a.Name, Levels: a.Levels})
@@ -106,6 +136,11 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 	}{businessSource(source), result.ReportID, result.ProjectID, gaps.SourceFingerprint, Hash(result.Input.Standards)})
 	return result, nil
 }
+
+func analysisReady(r knowledgegaps.Readiness) bool {
+	return r.Code != "ability_review_pending" && r.Code != "grading_pending" &&
+		r.PendingReviewCount == 0 && r.FailedReviewCount == 0 && r.PendingGradingCount == 0 && r.FailedGradingCount == 0
+}
 func (s *Service) Get(ctx context.Context, user uuid.UUID) (View, error) {
 	var result View
 	err := s.repo.WithinUserTransaction(ctx, user, func(txCtx context.Context) error {
@@ -113,7 +148,7 @@ func (s *Service) Get(ctx context.Context, user uuid.UUID) (View, error) {
 		if e != nil {
 			return e
 		}
-		result = View{Readiness: ss.Readiness, Knowledge: &ss.Input.Knowledge, Warnings: []string{}, ImportEnabled: s.remote != nil && s.remote.Enabled(), StudyFlowURL: s.webURL}
+		result = View{Readiness: ss.Readiness, Preparation: ss.Preparation, WeeklyHours: ss.Input.Profile.WeeklyHours, ExpectedWeeks: ss.Input.Profile.ExpectedWeeks, Knowledge: &ss.Input.Knowledge, Warnings: []string{}, ImportEnabled: s.remote != nil && s.remote.Enabled(), StudyFlowURL: s.webURL}
 		result.GoalTitle = ss.Input.Profile.Goal
 		result.ProjectTitle = ss.Input.Project.Title
 		if ss.Input.Knowledge.TargetID == uuid.Nil {

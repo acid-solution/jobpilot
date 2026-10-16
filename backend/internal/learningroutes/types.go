@@ -98,6 +98,9 @@ type ImportRequest struct {
 	DispatchToken uuid.UUID `json:"-"`
 }
 type View struct {
+	Preparation          Preparation             `json:"preparation"`
+	WeeklyHours          int                     `json:"weekly_hours"`
+	ExpectedWeeks        int                     `json:"expected_weeks"`
 	ProjectTitle         string                  `json:"project_title,omitempty"`
 	GoalTitle            string                  `json:"goal_title"`
 	Readiness            knowledgegaps.Readiness `json:"readiness"`
@@ -110,6 +113,18 @@ type View struct {
 	Warnings             []string                `json:"warnings"`
 	ImportEnabled        bool                    `json:"import_enabled"`
 	StudyFlowURL         string                  `json:"studyflow_url,omitempty"`
+}
+
+// Preparation reports independent prerequisites even when the first blocking
+// readiness reason is an earlier step, such as insufficient JD samples.
+type Preparation struct {
+	MarketComplete     bool `json:"market_complete"`
+	ProfileComplete    bool `json:"profile_complete"`
+	AnalysisReady      bool `json:"analysis_ready"`
+	ProjectSelected    bool `json:"project_selected"`
+	ProjectNeedsReview bool `json:"project_needs_review"`
+	IncludedJDCount    int  `json:"included_jd_count"`
+	RequiredJDCount    int  `json:"required_jd_count"`
 }
 type GenerateInput struct {
 	Config        Config `json:"config"`
@@ -145,6 +160,7 @@ type Input struct {
 	ProjectHash   string                    `json:"project_hash"`
 }
 type Snapshot struct {
+	Preparation   Preparation
 	TargetID      uuid.UUID
 	GoalSignature string
 	ReportID      uuid.UUID

@@ -5,7 +5,7 @@ GitHub Actions 在 push、PR 和手动触发时执行检查。只有受信任的
 ## CI
 
 - JobPilot：临时 PostgreSQL 17＋pgvector；先运行 `TestMigrationsSmoke` 建好普通集成测试库，再运行 `go test -race -count=1 -v ./...` 和 `go vet ./...`。`JOBPILOT_TEST_DATABASE_URL`、`TEST_DATABASE_URL` 指向该测试库；`JOBPILOT_ADMIN_DATABASE_URL` 指向同一临时实例的 postgres 库，供隔离测试建库。真实模型测试默认关闭。
-- 前端执行现有的类型检查和构建；尚未提供前端单元测试命令。
+- 前端执行 `npm test`、类型检查和生产构建；测试覆盖学习路线准备条件、未就绪入口及首次加载状态。
 - 部署脚本测试在独立、无网络的容器中验证配置生成、单服务发布、发布失败、备份失败及两个仓库同时发布的锁。Docker CLI 使用测试替代实现；不能把这些结果当成真实服务器发布验收。
 - 构建 linux/amd64 镜像。main 成功后发布 `ghcr.io/acid-solution/jobpilot:<commit>`，运行摘要记录不可变 digest。
 - shared-auth 固定源码提交 `246e0a27fb90401dd58817339b4df4d868d31b2b`，构建为 `ghcr.io/acid-solution/jobpilot-auth`。首次部署固定其 digest；日常应用发布不更新认证服务。

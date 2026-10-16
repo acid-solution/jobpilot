@@ -399,7 +399,7 @@ function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSigned
         ) : currentPage === 'gaps' ? (
           <KnowledgeGapsPage key={agentRefresh} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} onOpenSettings={() => setCurrentPage('settings')} />
         ) : currentPage === 'learning' ? (
-          <div className="page-content"><h1>学习路线</h1><p className="page-description">围绕已选项目和知识准备目标，规划两份可以并行推进的学习计划。</p><LearningRoutePanel key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} onOpenProjects={() => setCurrentPage('projects')} /></div>
+          <div className="page-content"><h1>学习路线</h1><p className="page-description">完成两类画像并选择项目后，规划项目实践与知识准备两份并行计划。</p><LearningRoutePanel key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} onOpenProjects={() => setCurrentPage('projects')} onOpenTarget={() => setTargetDialogOpen(true)} /></div>
         ) : (
           <SettingsPage key={agentRefresh} />
         )}

@@ -8,6 +8,9 @@ export interface LearningPlan { role: 'project' | 'knowledge'; title: string; de
 export interface LearningRouteVersion { preferences?: MemorySnapshot; preference_adjustment?: string; id: string; route_id: string; version_no: number; revision: number; content_hash: string; config: LearningRouteConfig; plans: LearningPlan[]; generated_at: string }
 export interface LearningRouteReceipt { import_id: string; goal_id: string; source_route_id: string; source_version: number; content_digest: string; plans: Array<{ role: string; plan_id: string; plan_version_id: string; version_no: number }> }
 export interface LearningRouteView {
+ preparation: { market_complete: boolean; profile_complete: boolean; analysis_ready: boolean; project_selected: boolean; project_needs_review: boolean; included_jd_count: number; required_jd_count: number }
+ weekly_hours: number
+ expected_weeks: number
  goal_title: string
  project_title?: string
  readiness: KnowledgeGapView['readiness']; knowledge_summary?: KnowledgeGapReport; version?: LearningRouteVersion

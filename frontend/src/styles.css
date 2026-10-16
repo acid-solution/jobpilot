@@ -5383,6 +5383,16 @@ textarea:focus-visible {
 .learning-route-panel { margin: 22px 0; padding: 24px; background: #fff; border: 1px solid #dce3ee; border-radius: 14px; }
 .learning-route-panel h2, .learning-route-panel h3, .learning-route-panel h4 { margin: 12px 0; }
 .learning-route-panel p, .learning-route-panel small { color: #63728a; line-height: 1.7; }
+.learning-route-panel .button:disabled { opacity: .45; cursor: not-allowed; }
+.route-preparation { margin: 22px 0; border: 1px solid #dce3ee; border-radius: 12px; overflow: hidden; }
+.route-preparation-heading { display: flex; align-items: center; gap: 14px; padding: 20px; background: #f3f6fd; }
+.route-preparation-icon { display: grid; place-items: center; flex: 0 0 40px; height: 40px; background: #fff; color: #3059d5; border-radius: 10px; }
+.route-preparation-heading h3 { margin: 0; font-size: 17px; }.route-preparation-heading p { margin: 6px 0 0; font-size: 13px; }
+.route-preparation-reason { padding: 0 20px; font-size: 13px; }.route-preparation > .button { margin: 0 20px 14px; }
+.route-preparation-steps { list-style: none; margin: 0; padding: 0 20px; }.route-preparation-steps li { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 17px 0; border-top: 1px solid #e8edf5; }
+.route-step-number { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; font-size: 12px; background: #edf1f9; color: #66748a; }.is-complete .route-step-number { color: #16815c; background: #e6f5ee; }
+.route-preparation-steps strong { font-size: 14px; }.route-preparation-steps p { margin: 5px 0 0; font-size: 12px; }.route-step-state { color: #8390a3; font-size: 12px; }.is-complete .route-step-state { color: #16815c; }.route-preparation-steps .button { grid-column: 2 / 4; justify-self: start; font-size: 12px; }
+.route-plan-introduction { padding: 12px 20px; background: #fafbfe; border-top: 1px solid #e8edf5; font-size: 13px; }.route-plan-introduction p { margin: 6px 0; }.route-preparation.is-ready .route-preparation-heading { background: #eef8f2; }
 .route-budget-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin: 18px 0; }
 .route-budget { min-width: 0; display: grid; gap: 12px; border: 1px solid #dce3ee; border-radius: 12px; padding: 18px; }
 .route-budget label, .route-adjustment { display: grid; gap: 8px; font-size: 13px; }

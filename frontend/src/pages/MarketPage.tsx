@@ -419,7 +419,9 @@ export function MarketPage() {
   )
 	const includedCount = profile.included_jd_count
   const processingCount = allSamples.filter((sample) => sample.status === 'processing').length
-	const pollableCount = allSamples.filter((sample) => sample.jobStatus === 'queued' || sample.jobStatus === 'running' || ((sample.abilityReview?.pending_count ?? 0) > 0 && !sample.abilityReview?.blocked && (!sample.abilityReview?.next_attempt_at || new Date(sample.abilityReview.next_attempt_at).getTime() <= Date.now() + 60_000))).length + profile.ability_grading_pending_count
+	const pollableCount = allSamples.filter((sample) => sample.jobStatus === 'queued' || sample.jobStatus === 'running' ||
+		(!sample.abilityGrading?.paused && (sample.abilityGrading?.status === 'queued' || sample.abilityGrading?.status === 'running')) ||
+		((sample.abilityReview?.pending_count ?? 0) > 0 && !sample.abilityReview?.blocked && (!sample.abilityReview?.next_attempt_at || new Date(sample.abilityReview.next_attempt_at).getTime() <= Date.now() + 60_000))).length + profile.ability_grading_pending_count
   const notIncludedCount = allSamples.length - includedCount - processingCount
 
   useEffect(() => {
@@ -518,11 +520,17 @@ export function MarketPage() {
 		setRawJD(await file.text())
 	}
 
+	const applyUpdatedJD = (updated: JobDescription) => {
+		const mapped = mapJD(updated)
+		setSamples((current) => current.map((sample) => sample.id === updated.id ? mapped : sample))
+		setAllSamples((current) => current.map((sample) => sample.id === updated.id ? mapped : sample))
+	}
+
   const retryJD = async (id: string) => {
     setError('')
     try {
       const updated = await jobPilotAPI.retryJD(id)
-      setSamples((current) => current.map((sample) => sample.id === id ? mapJD(updated) : sample))
+      applyUpdatedJD(updated)
       setNotice('分析任务已重新进入队列。')
     } catch (retryError) {
       setError(retryError instanceof Error ? retryError.message : '重新分析失败')
@@ -533,7 +541,7 @@ export function MarketPage() {
 		setError('')
 		try {
 			const updated = await jobPilotAPI.retryAbilityReviews(id)
-			setSamples((current) => current.map((sample) => sample.id === id ? mapJD(updated) : sample))
+			applyUpdatedJD(updated)
 			setNotice('能力目录审核已重新进入队列。')
 		} catch (retryError) {
 			setError(retryError instanceof Error ? retryError.message : '重新审核失败')
@@ -544,7 +552,7 @@ export function MarketPage() {
 		setError('')
 		try {
 			const updated = await jobPilotAPI.retryAbilityGrading(id)
-			setSamples((current) => current.map((sample) => sample.id === id ? mapJD(updated) : sample))
+			applyUpdatedJD(updated)
 			setNotice('能力等级判定已重新进入队列。')
 		} catch (retryError) {
 			setError(retryError instanceof Error ? retryError.message : '重新判级失败')

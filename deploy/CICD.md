@@ -33,6 +33,7 @@ GHCR 新包默认可能是私有的。上线前确认服务器能拉取三个固
 ## 服务器准备与首次部署
 
 1. 使用 root 先运行 `bash prepare-cd-server.sh --check`，检查计划；再运行 `--apply`。脚本通过 Docker 官方 Ubuntu APT 仓库安装 Docker/Compose，创建 `/srv/jobpilot-stack`，把部署账号加入 docker 组。不启动网站，不修改防火墙，不覆盖现有 Docker daemon 配置。**docker 组具有接近 root 的主机控制能力**；脚本不添加无限制 sudo。
+   如果服务器访问 Docker 官方源被重置，可改用 `DOCKER_APT_MIRROR=aliyun bash prepare-cd-server.sh --apply`，使用[阿里云提供的 Docker CE 镜像](https://developer.aliyun.com/mirror/docker-ce/)。仅接受这两个固定来源；下载的公钥须与已核对的 Docker 官方公钥 SHA-256 一致，APT 包签名验证始终开启。公钥轮换时需先核对官方更新，再更新脚本中的摘要。
 2. 重新连接部署账号，核验 `docker info` 与 `docker compose version`。将本仓库放到 `/srv/jobpilot-stack/jobpilot`。镜像部署无需另外克隆应用源码到 StudyFlow 目录。
 3. 按 `JOINT_DEPLOYMENT.md` 配置服务器专用 `.env.joint`，运行 `generate-secrets.sh .env.joint`，补齐邮件、模型、域名等实际配置。保留已有密钥和数据。
 4. 复制 `.env.images.example` 为 `.env.images`，填入两个应用及认证的成功构建摘要中的完整 digest，不能填 latest 或占位符。

@@ -5,6 +5,11 @@ set -euo pipefail
 
 mode="${1:---check}"
 case "$mode" in --check|--apply) ;; *) echo 'Use --check or --apply' >&2; exit 1 ;; esac
+case "${DOCKER_APT_MIRROR:-official}" in
+  official) docker_repository=https://download.docker.com/linux/ubuntu ;;
+  aliyun) docker_repository=https://mirrors.aliyun.com/docker-ce/linux/ubuntu ;;
+  *) echo 'DOCKER_APT_MIRROR must be official or aliyun.' >&2; exit 1 ;;
+esac
 [ "$(id -u)" -eq 0 ] || { echo 'Run in the existing root terminal.' >&2; exit 1; }
 deploy_user=acidsolution-deploy
 stack_directory=/srv/jobpilot-stack
@@ -20,6 +25,7 @@ fi
 case "$VERSION_CODENAME" in jammy|noble|resolute) ;; *) echo 'Review Docker support for this Ubuntu version first.' >&2; exit 1 ;; esac
 printf 'Plan: install Docker Engine/Compose if missing, enable Docker, create %s, and add %s to the docker group.\n' "$stack_directory" "$deploy_user"
 printf '%s\n' 'Docker group membership grants broad control over this host. No unrestricted sudo rule is added.'
+printf 'Docker package repository: %s\n' "$docker_repository"
 if [ "$mode" = --check ]; then
   command -v docker || true
   id "$deploy_user"
@@ -37,11 +43,17 @@ if ! command -v docker >/dev/null 2>&1; then
   apt-get update
   apt-get install -y ca-certificates curl
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
+  key_file="$(mktemp)"
+  trap 'rm -f -- "$key_file"' EXIT
+  curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 "$docker_repository/gpg" -o "$key_file"
+  # Exact SHA-256 of the Docker official public key, checked on 2026-10-16.
+  # Mirrors must deliver this same key; never disable APT signature verification.
+  printf '1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570  %s\n' "$key_file" | sha256sum --check --status || {
+    echo 'Docker signing key changed; verify it against Docker before updating this script.' >&2; exit 1;
+  }
   source_file=/etc/apt/sources.list.d/acidsolution-docker.sources
   source_content="Types: deb
-URIs: https://download.docker.com/linux/ubuntu
+URIs: $docker_repository
 Suites: $VERSION_CODENAME
 Components: stable
 Architectures: $(dpkg --print-architecture)
@@ -50,6 +62,7 @@ Signed-By: /etc/apt/keyrings/docker.asc"
     echo 'Existing Docker repository file differs; preserve it and review manually.' >&2
     exit 1
   fi
+  install -m 0644 "$key_file" /etc/apt/keyrings/docker.asc
   printf '%s\n' "$source_content" > "$source_file"
   apt-get update
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin

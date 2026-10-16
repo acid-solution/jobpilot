@@ -100,6 +100,9 @@ exit 0
 SYSTEMCTL
 chmod +x "$work/bin/systemctl"
 bash /source/prepare-cd-server.sh --check > /dev/null
+DOCKER_APT_MIRROR=aliyun bash /source/prepare-cd-server.sh --check > "$work/mirror-check.log"
+grep -q 'https://mirrors.aliyun.com/docker-ce/linux/ubuntu' "$work/mirror-check.log"
+if DOCKER_APT_MIRROR=untrusted bash /source/prepare-cd-server.sh --check > /dev/null 2>&1; then exit 1; fi
 test ! -e /srv/jobpilot-stack
 bash /source/prepare-cd-server.sh --apply > /dev/null
 test "$(stat -c %U /srv/jobpilot-stack)" = acidsolution-deploy

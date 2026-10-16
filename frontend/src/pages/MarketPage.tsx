@@ -336,8 +336,8 @@ function mapJD(item: JobDescription): JDSample {
 	      : '等待分类'
   return {
     id: item.id,
-    title: item.title || '正在识别岗位名称',
-    company: item.company || '待识别公司',
+    title: item.title || (pollable ? '正在识别岗位名称' : '岗位名称未提取'),
+    company: item.company || (pollable ? '待识别公司' : '公司名称未提取'),
 		status: displayStatus,
 		statusLabel,
 		primaryCategory: invalid || incomplete ? '不进入分类' : item.primary_category || '等待分类',

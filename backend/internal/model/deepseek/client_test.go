@@ -68,6 +68,113 @@ func TestAnalyzeJDUsesJSONModeAndKeepsOnlyQuotedEvidence(t *testing.T) {
 	}
 }
 
+func TestAnalyzeJDCorrectsInvalidOutputWithValidationFeedback(t *testing.T) {
+	for _, invalidJSON := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reconstructed evidence", true: "invalid JSON"}[invalidJSON], func(t *testing.T) {
+			parsed := testJDWithSharedModifier()
+			parsed.AbilityRequirements[0].Options[0].Evidence = "熟悉算法"
+			invalid, _ := json.Marshal(parsed)
+			if invalidJSON {
+				invalid = []byte(`{"document_type":`)
+			}
+			parsed.AbilityRequirements[0].Options[0].Evidence = "算法"
+			corrected, _ := json.Marshal(parsed)
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var request chatRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				content := string(invalid)
+				if calls == 2 {
+					if len(request.Messages) != 4 || request.Messages[2].Role != "assistant" || request.Messages[2].Content != string(invalid) {
+						t.Errorf("correction must include the previous output: %#v", request.Messages)
+					} else {
+						feedback := request.Messages[3]
+						if feedback.Role != "user" || !strings.Contains(feedback.Content, "连续逐字引用") ||
+							(!invalidJSON && !strings.Contains(feedback.Content, "ability_requirements[0].options[0].evidence")) {
+							t.Errorf("missing actionable validation feedback: %#v", feedback)
+						}
+					}
+					content = string(corrected)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": content}}}})
+			}))
+			defer server.Close()
+			result, err := NewClient(server.URL, server.Client()).AnalyzeJD(t.Context(), "test-key", "test-model", "开发后端服务；熟悉数据结构和算法。", testCatalog())
+			if err != nil || calls != 2 {
+				t.Fatalf("correction did not succeed: calls=%d err=%v", calls, err)
+			}
+			if result.ValidationStatus != jdanalysis.ValidationValid || len(result.AbilityRequirements) != 1 || result.AbilityRequirements[0].Options[0].Evidence != "算法" {
+				t.Fatalf("corrected requirement was lost: %#v", result)
+			}
+		})
+	}
+}
+
+func TestAnalyzeJDBoundsCorrectionAndKeepsStrictEvidenceValidation(t *testing.T) {
+	parsed := testJDWithSharedModifier()
+	parsed.AbilityRequirements[0].Options[0].Evidence = "熟悉算法"
+	invalid, _ := json.Marshal(parsed)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": string(invalid)}}}})
+	}))
+	defer server.Close()
+	_, err := NewClient(server.URL, server.Client()).AnalyzeJD(t.Context(), "test-key", "test-model", "开发后端服务；熟悉数据结构和算法。", testCatalog())
+	var classified *jdanalysis.ClassifiedError
+	if calls != 2 || !errors.As(err, &classified) || classified.FailureCode != "model_invalid_response" || !classified.CanRetry {
+		t.Fatalf("expected bounded correction and classified failure: calls=%d err=%v", calls, err)
+	}
+	if !strings.Contains(err.Error(), "ability_requirements[0].options[0].evidence") || strings.Contains(err.Error(), "熟悉算法") {
+		t.Fatalf("diagnostic must locate the field without logging source content: %v", err)
+	}
+}
+
+func TestNormalizeAbilityOptionEvidenceDiagnosesDistinctFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, evidence, label, message string
+	}{
+		{"missing name", "算法", "", ".name is missing"},
+		{"missing evidence", "", "算法", ".evidence is missing"},
+		{"reconstructed modifier", "熟悉算法", "算法", ".evidence is not a continuous quote"},
+		{"unrelated source sentence", "开发后端服务", "后端服务", ".evidence is outside its requirement"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := testJDWithSharedModifier()
+			parsed.AbilityRequirements[0].Options[0].Name = tc.label
+			parsed.AbilityRequirements[0].Options[0].Evidence = tc.evidence
+			_, err := normalize(parsed, "开发后端服务；熟悉数据结构和算法。", testCatalog())
+			if err == nil || !strings.Contains(err.Error(), "ability_requirements[0].options[0]"+tc.message) {
+				t.Fatalf("expected precise validation failure, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeReportsOriginalOptionIndexAfterSplittingSingles(t *testing.T) {
+	parsed := testJDWithSharedModifier()
+	parsed.AbilityRequirements[0].Options = []parsedAbilityRequirementOption{
+		{Name: "数据结构", Evidence: "数据结构"},
+		{Name: "算法", Evidence: "熟悉算法"},
+	}
+	_, err := normalize(parsed, "开发后端服务；熟悉数据结构和算法。", testCatalog())
+	if err == nil || !strings.Contains(err.Error(), "ability_requirements[0].options[1].evidence") {
+		t.Fatalf("correction must locate the option in the original JSON: %v", err)
+	}
+}
+
+func testJDWithSharedModifier() parsedJD {
+	return parsedJD{
+		DocumentType: jdanalysis.DocumentJobDescription, ValidationStatus: jdanalysis.ValidationValid,
+		Title: "后端开发", EmploymentType: "campus", Responsibilities: []string{"开发后端服务"},
+		Classifications:     []parsedClassification{{CategoryCode: "backend", SpecialtyCode: "backend-business", Relation: "primary", Evidence: "开发后端服务", Reason: "交付业务服务"}},
+		AbilityRequirements: []parsedAbilityRequirement{{Operator: jdanalysis.RequirementSingle, RequiredCount: 1, Evidence: "熟悉数据结构和算法", Options: []parsedAbilityRequirementOption{{Name: "算法", Evidence: "算法"}}}},
+	}
+}
+
 func TestNormalizeAbilityRequirementsRemovesSingleDuplicatedByAnyOfFromSameEvidence(t *testing.T) {
 	rawJD := "精通至少一门编程语言，包括但不仅限于：Java、C++、Python、Go；"
 	evidence := "精通至少一门编程语言，包括但不仅限于：Java、C++、Python、Go"
@@ -463,7 +570,9 @@ func TestNormalizeKeepsModelNonJDInvalid(t *testing.T) {
 }
 
 func TestAnalyzeJDClassifiesAuthenticationFailureAsTerminal(t *testing.T) {
+	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		calls++
 		writer.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer server.Close()
@@ -471,8 +580,9 @@ func TestAnalyzeJDClassifiesAuthenticationFailureAsTerminal(t *testing.T) {
 	_, err := NewClient(server.URL, server.Client()).AnalyzeJD(
 		context.Background(), "bad-key", "deepseek-flash", "一份长度足够的岗位说明原文，用来测试鉴权失败。", jdanalysis.Catalog{},
 	)
-	if err == nil {
-		t.Fatal("expected error")
+	var classified *jdanalysis.ClassifiedError
+	if calls != 1 || !errors.As(err, &classified) || classified.FailureCode != "model_auth_failed" || classified.CanRetry {
+		t.Fatalf("authentication errors must not trigger correction: calls=%d err=%v", calls, err)
 	}
 }
 

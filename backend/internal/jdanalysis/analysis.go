@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "jd-raw-abilities-v13"
+const PromptVersion = "jd-raw-abilities-v14"
 const NormalizationPromptVersion = "jd-vector-candidates-v12"
 const ClassificationReviewPromptVersion = "job-classification-review-v1"
 

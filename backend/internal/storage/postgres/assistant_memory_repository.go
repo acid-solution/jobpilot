@@ -88,7 +88,9 @@ func (r *AssistantMemoryRepository) save(ctx context.Context, user uuid.UUID, go
 	if err != nil {
 		return err
 	}
-	if _, err = r.db.ExecContext(ctx, `INSERT INTO agent_memory_revisions(memory_id,revision,value,status) VALUES($1,$2,$3,'active')`, out.ID, revision, []byte(out.Value)); err != nil {
+	// A successful write supersedes previews based on the previous value. Keep
+	// only their fingerprints, so an old suggestion cannot restore that value.
+	if _, err = r.db.ExecContext(ctx, `UPDATE agent_memory_proposals SET status='stale',value='null',before_value=NULL,source_quote='' WHERE user_id=$1 AND scope=$2 AND memory_key=$3 AND status='pending'`, user, scope, w.Key); err != nil {
 		return err
 	}
 	_, err = r.db.ExecContext(ctx, `INSERT INTO agent_context_scopes(user_id,scope,revision) VALUES($1,$2,1) ON CONFLICT(user_id,scope) DO UPDATE SET revision=agent_context_scopes.revision+1`, user, scope)
@@ -104,15 +106,11 @@ func (r *AssistantMemoryRepository) Forget(ctx context.Context, user uuid.UUID, 
 		if err != nil {
 			return err
 		}
-		// Retain only a tombstone, never a copy of the forgotten value in revisions.
-		if _, err = r.db.ExecContext(tx, `UPDATE agent_memory_revisions SET value='null',status='forgotten' WHERE memory_id=$1`, id); err != nil {
-			return err
-		}
 		if _, err = r.db.ExecContext(tx, `INSERT INTO agent_context_scopes(user_id,scope,revision,epoch) VALUES($1,$2,1,1) ON CONFLICT(user_id,scope) DO UPDATE SET revision=agent_context_scopes.revision+1,epoch=agent_context_scopes.epoch+1`, user, scope); err != nil {
 			return err
 		}
 		filter := `user_id=$1 AND ($2='global' OR goal_key=$2)`
-		if _, err = r.db.ExecContext(tx, `UPDATE agent_memory_proposals SET status='stale' WHERE status='pending' AND `+filter, user, scope); err != nil {
+		if _, err = r.db.ExecContext(tx, `UPDATE agent_memory_proposals SET status='stale',value='null',before_value=NULL,source_quote='' WHERE status='pending' AND `+filter, user, scope); err != nil {
 			return err
 		}
 		if _, err = r.db.ExecContext(tx, `DELETE FROM agent_context_artifacts WHERE `+filter, user, scope); err != nil {
@@ -185,13 +183,13 @@ func (r *AssistantMemoryRepository) Propose(ctx context.Context, user uuid.UUID,
 			return assistantmemory.ErrInvalid
 		}
 		var duplicate bool
-		if e = r.db.QueryRowContext(tx, `SELECT EXISTS(SELECT 1 FROM agent_memory_proposals WHERE source_message_id=$1 AND memory_key=$2 AND value=$3::jsonb)`, p.SourceMessageID, p.Key, []byte(p.Value)).Scan(&duplicate); e != nil {
+		if e = r.db.QueryRowContext(tx, `SELECT EXISTS(SELECT 1 FROM agent_memory_proposals WHERE source_message_id=$1 AND memory_key=$2 AND value_fingerprint=encode(sha256(convert_to(($3::jsonb)::text,'UTF8')),'hex'))`, p.SourceMessageID, p.Key, []byte(p.Value)).Scan(&duplicate); e != nil {
 			return e
 		}
 		if duplicate {
 			return assistantmemory.ErrConflict
 		}
-		if _, e = r.db.ExecContext(tx, `UPDATE agent_memory_proposals SET status='stale' WHERE user_id=$1 AND scope=$2 AND memory_key=$3 AND status='pending'`, user, p.Scope, p.Key); e != nil {
+		if _, e = r.db.ExecContext(tx, `UPDATE agent_memory_proposals SET status='stale',value='null',before_value=NULL,source_quote='' WHERE user_id=$1 AND scope=$2 AND memory_key=$3 AND status='pending'`, user, p.Scope, p.Key); e != nil {
 			return e
 		}
 		p.ID = uuid.New()
@@ -201,7 +199,7 @@ func (r *AssistantMemoryRepository) Propose(ctx context.Context, user uuid.UUID,
 			Epoch assistantmemory.Epoch
 			Quote string
 		}{p.ID, p.Write, p.Epoch, p.SourceQuote})
-		_, e = r.db.ExecContext(tx, `INSERT INTO agent_memory_proposals(id,user_id,goal_key,scope,conversation_id,source_message_id,source_quote,memory_key,value,before_value,expected_revision,expected_hash,content_hash,global_epoch,goal_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, p.ID, user, goal, p.Scope, p.ConversationID, p.SourceMessageID, p.SourceQuote, p.Key, []byte(p.Value), nullableJSON(p.Before), p.Revision, p.Hash, p.ContentHash, p.Epoch.Global, p.Epoch.Goal)
+		_, e = r.db.ExecContext(tx, `INSERT INTO agent_memory_proposals(id,user_id,goal_key,scope,conversation_id,source_message_id,source_quote,memory_key,value,before_value,expected_revision,expected_hash,content_hash,global_epoch,goal_epoch,value_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,encode(sha256(convert_to(($9::jsonb)::text,'UTF8')),'hex'))`, p.ID, user, goal, p.Scope, p.ConversationID, p.SourceMessageID, p.SourceQuote, p.Key, []byte(p.Value), nullableJSON(p.Before), p.Revision, p.Hash, p.ContentHash, p.Epoch.Global, p.Epoch.Goal)
 		out = p
 		return e
 	})
@@ -261,13 +259,20 @@ func (r *AssistantMemoryRepository) ResolveEdited(ctx context.Context, user uuid
 			if e != nil {
 				return e
 			}
-			if p.Status == "accepted" && p.Result != nil && string(p.Result.Value) != string(w.Value) {
-				return assistantmemory.ErrConflict
+			if p.Status == "accepted" {
+				var same bool
+				if e = r.db.QueryRowContext(tx, `SELECT COALESCE(result->>'value_fingerprint','')=encode(sha256(convert_to(($2::jsonb)::text,'UTF8')),'hex') FROM agent_memory_proposals WHERE id=$1`, id, []byte(w.Value)).Scan(&same); e != nil {
+					return e
+				}
+				if !same {
+					return assistantmemory.ErrConflict
+				}
 			}
 			p.Value = w.Value
 		}
 		if p.Status != "pending" {
 			if (approve && p.Status == "accepted") || (!approve && p.Status == "rejected") {
+				p.Value = json.RawMessage(`null`)
 				out = p
 				return nil
 			}
@@ -286,11 +291,14 @@ func (r *AssistantMemoryRepository) ResolveEdited(ctx context.Context, user uuid
 			if e = r.save(tx, user, goal, nil, p.Write, &p.SourceMessageID, p.SourceQuote, &m); e != nil {
 				return e
 			}
-			p.Result = &m
+			p.Result = &assistantmemory.MemoryReceipt{ID: m.ID, Revision: m.Revision}
 			p.Status = "accepted"
 		}
 		b, _ := json.Marshal(p.Result)
-		_, e = r.db.ExecContext(tx, `UPDATE agent_memory_proposals SET status=$2,result=$3 WHERE id=$1`, id, p.Status, b)
+		_, e = r.db.ExecContext(tx, `UPDATE agent_memory_proposals SET status=$2,value='null',before_value=NULL,source_quote='',result=CASE WHEN $2='accepted' THEN $3::jsonb || jsonb_build_object('value_fingerprint',encode(sha256(convert_to(($4::jsonb)::text,'UTF8')),'hex')) ELSE NULL END WHERE id=$1`, id, p.Status, b, []byte(p.Value))
+		p.Value = json.RawMessage(`null`)
+		p.Before = nil
+		p.SourceQuote = ""
 		out = p
 		return e
 	})

@@ -51,6 +51,13 @@ type Write struct {
 	Revision int64           `json:"expected_revision"`
 	Hash     string          `json:"expected_hash"`
 }
+
+// MemoryReceipt makes confirmation retries idempotent without retaining a copy
+// of a previous preference value. The current value is read through Snapshot.
+type MemoryReceipt struct {
+	ID       uuid.UUID `json:"id"`
+	Revision int64     `json:"revision"`
+}
 type Proposal struct {
 	ID              uuid.UUID `json:"id"`
 	ConversationID  uuid.UUID `json:"conversation_id"`
@@ -62,7 +69,7 @@ type Proposal struct {
 	ContentHash string          `json:"content_hash"`
 	Epoch       Epoch           `json:"epoch"`
 	Status      string          `json:"status"`
-	Result      *Memory         `json:"result,omitempty"`
+	Result      *MemoryReceipt  `json:"result,omitempty"`
 }
 type Repository interface {
 	Snapshot(context.Context, uuid.UUID, string) (Snapshot, error)

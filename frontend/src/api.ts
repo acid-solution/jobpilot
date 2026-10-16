@@ -643,12 +643,13 @@ export interface AgentStreamEvent { type: 'delta' | 'tool' | 'citation' | 'actio
 export interface AgentMemory { id: string; scope: string; key: string; value: string | string[]; revision: number; content_hash: string; status: string; source_quote?: string; source_message_id?: string; updated_at: string }
 export interface MemorySnapshot { memories: AgentMemory[]; forgotten?: AgentMemory[]; epoch: { global: number; goal: number } }
 export interface MemoryProposal { id: string; conversation_id: string; key: string; value: string | string[]; before?: string | string[]; scope: string; source_quote: string; expected_revision: number; expected_hash: string; content_hash: string; status: string }
+export interface MemoryProposalResolution { id: string; status: 'accepted' | 'rejected'; result?: { id: string; revision: number } }
 export const memoryAPI = {
  list: () => request<MemorySnapshot>('/api/v1/agent/memories'),
  proposals: () => request<MemoryProposal[]>('/api/v1/agent/memory-proposals'),
  save: (key: string, value: string | string[], existing?: AgentMemory) => request<AgentMemory>(existing ? `/api/v1/agent/memories/${existing.id}` : '/api/v1/agent/memories', { method: existing ? 'PATCH' : 'POST', body: JSON.stringify({ key, value, expected_revision: existing?.revision ?? 0, expected_hash: existing?.content_hash ?? '' }) }),
  forget: (memory: AgentMemory) => request<void>(`/api/v1/agent/memories/${memory.id}`, { method: 'DELETE', body: JSON.stringify({ expected_revision: memory.revision, expected_hash: memory.content_hash }) }),
- resolve: (proposal: MemoryProposal, approve: boolean, value?: string | string[]) => request<MemoryProposal>(`/api/v1/agent/memory-proposals/${proposal.id}/resolve`, { method: 'POST', body: JSON.stringify({ approve, content_hash: proposal.content_hash, value }) }),
+ resolve: (proposal: MemoryProposal, approve: boolean, value?: string | string[]) => request<MemoryProposalResolution>(`/api/v1/agent/memory-proposals/${proposal.id}/resolve`, { method: 'POST', body: JSON.stringify({ approve, content_hash: proposal.content_hash, value }) }),
  history: (id: string, before: number) => request<{ messages: AgentMessageRecord[]; next_before_sequence?: number }>(`/api/v1/agent/conversations/${id}/messages?before_sequence=${before}`),
 }
 

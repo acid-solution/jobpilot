@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -46,7 +45,7 @@ type normalizationDecision struct {
 }
 
 func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, model string, catalog Catalog, result Result) (Result, error) {
-	if n == nil || n.Embedder == nil || n.Search == nil || n.Model == nil {
+	if n == nil || n.Model == nil {
 		return result, NewError("ability_normalization_unavailable", true, errors.New("JD ability normalizer is not configured"))
 	}
 	byExact := make(map[string]AbilityOption)
@@ -82,44 +81,55 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 		result.VectorNormalized = true
 		return result, nil
 	}
-	if !n.Embedder.Configured() {
-		return result, errors.New("platform embedding is not configured")
+	for i := range pending {
+		pending[i].Candidates = textAbilityCandidates(pending[i].Label, catalog.Abilities, 6)
 	}
-	for start := 0; start < len(pending); start += 10 {
-		end := start + 10
-		if end > len(pending) {
-			end = len(pending)
-		}
-		texts := make([]string, end-start)
-		for i := start; i < end; i++ {
-			texts[i-start] = pending[i].Label + "；" + pending[i].Qualifier
-		}
-		vectors, err := n.Embedder.Embed(ctx, texts)
-		if err != nil {
-			return result, err
-		}
-		for i, vector := range vectors {
-			matches, err := n.Search.SearchAbilities(ctx, vector, 6)
+	if n.Embedder != nil && n.Embedder.Configured() && n.Search != nil {
+		for start := 0; start < len(pending); start += 10 {
+			end := start + 10
+			if end > len(pending) {
+				end = len(pending)
+			}
+			texts := make([]string, end-start)
+			for i := start; i < end; i++ {
+				texts[i-start] = pending[i].Label + "；" + pending[i].Qualifier
+			}
+			vectors, err := n.Embedder.Embed(ctx, texts)
 			if err != nil {
-				return result, err
+				// Vector recall is an enhancement. Lexical candidates and independent
+				// review remain available when embedding requests fail.
+				continue
 			}
-			if len(matches) == 0 && len(catalog.Abilities) > 0 {
-				return result, NewError("ability_vectors_unavailable", true, errors.New("ability catalog vectors are not ready"))
-			}
-			p := &pending[start+i]
-			p.Candidates = matches
-			// A first-stage code is a candidate only, never an automatic match.
-			current := result.AbilityRequirements[p.Requirement].Options[p.Option]
-			if a, ok := byCode[current.CatalogCode]; ok {
-				found := false
-				for _, m := range matches {
-					if m.Code == a.Code {
-						found = true
-						break
+			for i, vector := range vectors {
+				matches, err := n.Search.SearchAbilities(ctx, vector, 6)
+				if err != nil {
+					continue
+				}
+				p := &pending[start+i]
+				seen := map[string]bool{}
+				for _, match := range matches {
+					seen[match.Code] = true
+				}
+				for _, match := range p.Candidates {
+					if !seen[match.Code] {
+						matches = append(matches, match)
+						seen[match.Code] = true
 					}
 				}
-				if !found {
-					p.Candidates = append(p.Candidates, AbilityMatch{Code: a.Code, Name: a.Name, CategoryCode: a.CategoryCode, Aliases: a.Aliases, Definition: a.Definition})
+				p.Candidates = matches
+				// A first-stage code is a candidate only, never an automatic match.
+				current := result.AbilityRequirements[p.Requirement].Options[p.Option]
+				if a, ok := byCode[current.CatalogCode]; ok {
+					found := false
+					for _, m := range matches {
+						if m.Code == a.Code {
+							found = true
+							break
+						}
+					}
+					if !found {
+						p.Candidates = append(p.Candidates, AbilityMatch{Code: a.Code, Name: a.Name, CategoryCode: a.CategoryCode, Aliases: a.Aliases, Definition: a.Definition})
+					}
 				}
 			}
 		}
@@ -143,30 +153,77 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 	if err := n.Model.GenerateJSON(ctx, key, model, "你是保守的 JD 技术能力归一化判定器。", prompt, &output); err != nil {
 		return result, err
 	}
-	if len(output.Decisions) != len(pending) {
-		return result, NewError("model_invalid_response", true, errors.New("ability normalization decision count mismatch"))
-	}
-	seen := make(map[int]bool, len(pending))
-	for _, d := range output.Decisions {
-		if d.Index < 0 || d.Index >= len(pending) || seen[d.Index] || strings.TrimSpace(d.Reason) == "" {
-			return result, NewError("model_invalid_response", true, errors.New("invalid ability normalization decision"))
+
+	decisions := make(map[int]normalizationDecision)
+	valid := func(d normalizationDecision) bool {
+		if d.Index < 0 || d.Index >= len(pending) || strings.TrimSpace(d.Reason) == "" {
+			return false
 		}
-		seen[d.Index] = true
-		p := pending[d.Index]
-		option := &result.AbilityRequirements[p.Requirement].Options[p.Option]
 		switch d.Decision {
 		case "reuse_existing":
-			allowed := false
-			for _, c := range p.Candidates {
-				if c.Code == d.ExistingCode {
-					allowed = true
-					break
+			if _, ok := byCode[d.ExistingCode]; !ok {
+				return false
+			}
+			for _, candidate := range pending[d.Index].Candidates {
+				if candidate.Code == d.ExistingCode {
+					return true
 				}
 			}
-			a, exists := byCode[d.ExistingCode]
-			if !allowed || !exists {
-				return result, NewError("model_invalid_response", true, fmt.Errorf("normalizer used an unlisted ability code"))
+			return false
+		case "request_new":
+			if d.Candidate == nil {
+				return false
 			}
+			_, known := categoryNames[d.Candidate.CategoryCode]
+			return d.Candidate.CategoryCode != "" && (len(categoryNames) == 0 || known) && strings.TrimSpace(d.Candidate.Definition) != ""
+		case "ignore":
+			return true
+		}
+		return false
+	}
+	accept := func(items []normalizationDecision) {
+		for _, d := range items {
+			if valid(d) {
+				if _, exists := decisions[d.Index]; !exists {
+					decisions[d.Index] = d
+				}
+			}
+		}
+	}
+	accept(output.Decisions)
+	missing := []any{}
+	for index, item := range pending {
+		if _, ok := decisions[index]; !ok {
+			missing = append(missing, map[string]any{"index": index, "input": item})
+		}
+	}
+	if len(missing) > 0 {
+		payload, _ := json.Marshal(missing)
+		var repaired struct {
+			Decisions []normalizationDecision `json:"decisions"`
+		}
+		correction := `只修正以下缺失或不合法的决策，已成功的决策不会重新生成。保留输入给出的原始index，每项返回一个decisions元素。规则与上次相同；只能复用该项候选中的code，新增大类必须来自给出的能力大类。能力大类：` + string(categoryJSON) + `。输入：` + string(payload)
+		if err := n.Model.GenerateJSON(ctx, key, model, "你是保守的 JD 技术能力归一化判定器。", correction, &repaired); err != nil {
+			return result, err
+		}
+		accept(repaired.Decisions)
+	}
+	for index, p := range pending {
+		option := &result.AbilityRequirements[p.Requirement].Options[p.Option]
+		d, ok := decisions[index]
+		if !ok {
+			// An invalid identity decision cannot justify deleting an extracted
+			// technical requirement. Leave it for the independent catalog reviewer.
+			option.CatalogCode = ""
+			option.AbilityName = option.RawLabel
+			option.Candidate = nil
+			option.NormalizationReason = "归一化未形成合法结论，提交独立能力审核"
+			result.Warnings = append(result.Warnings, "部分能力待独立审核确认目录归属。")
+			continue
+		}
+		switch d.Decision {
+		case "reuse_existing":
+			a := byCode[d.ExistingCode]
 			option.CatalogCode = a.Code
 			option.AbilityName = a.Name
 			option.Candidate = nil
@@ -174,12 +231,6 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 			result.AliasProposals = append(result.AliasProposals, AbilityAliasProposal{CatalogCode: a.Code, Label: option.RawLabel, Evidence: option.Evidence, Reason: d.Reason})
 		case "request_new":
 			candidate := d.Candidate
-			if candidate == nil {
-				candidate = option.Candidate
-			}
-			if candidate == nil || candidate.CategoryCode == "" || strings.TrimSpace(candidate.Definition) == "" {
-				return result, NewError("model_invalid_response", true, errors.New("new ability application incomplete"))
-			}
 			candidate.Reason = d.Reason
 			for _, c := range p.Candidates {
 				candidate.NearestCandidateCodes = append(candidate.NearestCandidateCodes, c.Code)
@@ -191,8 +242,6 @@ func (n *VectorNormalizer) Normalize(ctx context.Context, _ uuid.UUID, key, mode
 			option.CatalogCode = ""
 			option.Candidate = nil
 			option.AbilityName = ""
-		default:
-			return result, NewError("model_invalid_response", true, errors.New("invalid normalization decision"))
 		}
 	}
 	filtered := make([]AbilityRequirement, 0, len(result.AbilityRequirements))

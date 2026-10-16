@@ -20,17 +20,18 @@ import (
 )
 
 type readArgs struct {
-	Resource string `json:"resource" jsonschema_description:"target,job_catalog,jd_list,jd_detail,market_profile,user_profile,profile_settings,materials,knowledge_gaps,recommendations,learning_route,source_search,task_status"`
+	Resource string `json:"resource" jsonschema_description:"target,job_catalog,jd_list,jd_detail,jd_imports,jd_import,market_profile,user_profile,profile_settings,materials,knowledge_gaps,recommendations,learning_route,source_search,task_status"`
 	ID       string `json:"id,omitempty" jsonschema_description:"JD 详情时的 UUID"`
 	Query    string `json:"query,omitempty" jsonschema_description:"检索用户原始 JD、简历和经历时的问题"`
 }
 type writeArgs struct {
-	Kind      string          `json:"kind" jsonschema_description:"target_update,jd_add,jd_batch,jd_edit,jd_delete,jd_retry,jd_review_retry,jd_grading_retry,material_add,material_edit,material_delete,material_confirm,profile_settings,capability_level,gaps_analyze,recommendations_generate,project_select,route_generate,route_edit,route_import,route_import_retry"`
+	Kind      string          `json:"kind" jsonschema_description:"target_update,jd_add,jd_batch,jd_edit,jd_import_confirm,jd_delete,jd_retry,jd_review_retry,jd_grading_retry,material_add,material_edit,material_delete,material_confirm,profile_settings,capability_level,gaps_analyze,recommendations_generate,project_select,route_generate,route_edit,route_import,route_import_retry"`
 	Arguments json.RawMessage `json:"arguments" jsonschema_description:"与现有 JobPilot 业务接口一致的 JSON 对象。旧资源操作需提供 id；项目选择需 report_id 和 project_id。"`
 }
 
 var actionTitles = map[string]string{
-	"route_generate": "生成学习路线", "route_edit": "编辑学习路线草案", "route_import": "导入 StudyFlow 学习路线", "route_import_retry": "重试已确认的学习路线导入",
+	"jd_import_confirm": "确认所选 JD 候选",
+	"route_generate":    "生成学习路线", "route_edit": "编辑学习路线草案", "route_import": "导入 StudyFlow 学习路线", "route_import_retry": "重试已确认的学习路线导入",
 	"target_update": "更改求职目标", "jd_add": "添加 JD", "jd_batch": "批量添加 JD", "jd_edit": "修改 JD 原文", "jd_delete": "删除 JD", "jd_retry": "重新分析 JD", "jd_review_retry": "重试能力审核", "jd_grading_retry": "重试能力判级",
 	"material_add": "添加经历或简历文字", "material_edit": "修改材料", "material_delete": "删除材料", "material_confirm": "确认材料", "profile_settings": "修改画像必要信息", "capability_level": "设置能力等级", "gaps_analyze": "生成知识短板报告", "recommendations_generate": "生成项目推荐", "project_select": "选择项目",
 }
@@ -347,6 +348,22 @@ func (s *Service) read(ctx context.Context, user uuid.UUID, t *target.Target, in
 		}
 		v, e := s.Market.Detail(ctx, user, id)
 		return string(marshal(v)), e
+	case "jd_imports":
+		if s.Imports == nil {
+			return "", errors.New("岗位导入尚未启用")
+		}
+		v, e := s.Imports.List(ctx, user)
+		return string(marshal(v)), e
+	case "jd_import":
+		if s.Imports == nil {
+			return "", errors.New("岗位导入尚未启用")
+		}
+		id, e := uuid.Parse(in.ID)
+		if e != nil {
+			return "", e
+		}
+		v, e := s.Imports.Get(ctx, user, id)
+		return string(marshal(v)), e
 	case "market_profile":
 		v, e := s.Market.ProfileCurrent(ctx, user)
 		return string(marshal(v)), e
@@ -483,6 +500,15 @@ func canonicalArguments(kind string, raw json.RawMessage) (json.RawMessage, erro
 		}
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
+		}
+		value = v
+	case "jd_import_confirm":
+		var v struct {
+			ID           uuid.UUID   `json:"id"`
+			CandidateIDs []uuid.UUID `json:"candidate_ids"`
+		}
+		if e := json.Unmarshal(raw, &v); e != nil {
+			return nil, e
 		}
 		value = v
 	case "jd_delete", "jd_retry", "jd_review_retry", "jd_grading_retry", "material_delete", "material_confirm":
@@ -624,6 +650,15 @@ func (s *Service) snapshotHash(ctx context.Context, user uuid.UUID, kind string,
 		resource, err = s.learningGuard(ctx, user, kind, args)
 	case "target_update", "jd_add", "jd_batch":
 		resource = t
+	case "jd_import_confirm":
+		if s.Imports == nil {
+			return "", errors.New("岗位导入尚未启用")
+		}
+		id, e := parseID(args, "id")
+		if e != nil {
+			return "", e
+		}
+		resource, err = s.Imports.Get(ctx, user, id)
 	case "jd_edit", "jd_delete", "jd_retry", "jd_review_retry", "jd_grading_retry":
 		id, e := parseID(args, "id")
 		if e != nil {
@@ -691,6 +726,18 @@ func (s *Service) snapshotHash(ctx context.Context, user uuid.UUID, kind string,
 }
 func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args json.RawMessage) (any, error) {
 	switch kind {
+	case "jd_import_confirm":
+		if s.Imports == nil {
+			return nil, errors.New("岗位导入尚未启用")
+		}
+		var v struct {
+			ID           uuid.UUID   `json:"id"`
+			CandidateIDs []uuid.UUID `json:"candidate_ids"`
+		}
+		if e := json.Unmarshal(args, &v); e != nil {
+			return nil, e
+		}
+		return s.Imports.Confirm(ctx, user, v.ID, v.CandidateIDs)
 	case "route_generate":
 		if s.Learning == nil {
 			return nil, errors.New("学习路线尚未启用")
@@ -740,6 +787,9 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		if e := json.Unmarshal(args, &in); e != nil {
 			return nil, e
 		}
+		if s.Imports != nil {
+			return s.Imports.Start(ctx, user, in.RawText, nil)
+		}
 		return s.Market.Submit(ctx, user, in.RawText)
 	case "jd_batch":
 		var in struct {
@@ -747,6 +797,9 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		}
 		if e := json.Unmarshal(args, &in); e != nil {
 			return nil, e
+		}
+		if s.Imports != nil {
+			return s.Imports.Start(ctx, user, strings.Join(in.RawTexts, "\n---\n"), nil)
 		}
 		return s.Market.SubmitBatch(ctx, user, in.RawTexts)
 	case "jd_edit":
@@ -756,6 +809,9 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		}
 		if e := json.Unmarshal(args, &in); e != nil {
 			return nil, e
+		}
+		if s.Imports != nil {
+			return s.Imports.Start(ctx, user, in.RawText, &in.ID)
 		}
 		return s.Market.Update(ctx, user, in.ID, in.RawText)
 	case "jd_delete":
@@ -771,6 +827,15 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		}
 		switch kind {
 		case "jd_retry":
+			if s.Imports != nil {
+				jd, e := s.Market.Detail(ctx, user, id)
+				if e != nil {
+					return nil, e
+				}
+				if len(jd.Analysis.Stages) == 0 {
+					return s.Imports.Start(ctx, user, jd.RawText, &id)
+				}
+			}
 			return s.Market.Retry(ctx, user, id)
 		case "jd_review_retry":
 			return s.Market.RetryAbilityReviews(ctx, user, id)

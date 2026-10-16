@@ -300,6 +300,9 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 		}
 	}
 	var resolved any = nil
+	if err := syncJDAbilityMentions(ctx, tx, affectedJDs...); err != nil {
+		return err
+	}
 	if err := enqueueAbilityGradingForReview(ctx, tx, affectedJDs...); err != nil {
 		return err
 	}
@@ -508,6 +511,19 @@ func cleanupRequirementGroups(ctx context.Context, tx *sql.Tx, jdIDs ...uuid.UUI
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `DELETE FROM job_description_ability_requirements requirement WHERE job_description_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value) AND operator='at_least_n' AND (SELECT COUNT(*) FROM job_description_ability_requirement_options option WHERE option.requirement_id=requirement.id)<required_count`, ids)
+	return err
+}
+
+// Rebuild after both acceptance and rejection, including the all-empty case.
+func syncJDAbilityMentions(ctx context.Context, tx *sql.Tx, jdIDs ...uuid.UUID) error {
+	if len(jdIDs) == 0 {
+		return nil
+	}
+	ids, err := json.Marshal(jdIDs)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE job_descriptions jd SET ability_mentions=COALESCE((SELECT jsonb_agg(jsonb_build_object('name',COALESCE(ability.name,option.raw_label),'catalog_code',COALESCE(ability.code,''),'qualifier',option.qualifier,'evidence',option.evidence,'required_level',option.required_level) ORDER BY requirement.sort_order,option.sort_order) FROM job_description_ability_requirements requirement JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id LEFT JOIN abilities ability ON ability.id=option.ability_id WHERE requirement.job_description_id=jd.id),'[]'::jsonb),updated_at=now() WHERE jd.id IN(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value)`, ids)
 	return err
 }
 func rebuildResolvedMentions(ctx context.Context, tx *sql.Tx, requestID uuid.UUID) error {

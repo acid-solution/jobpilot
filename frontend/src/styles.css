@@ -5437,3 +5437,12 @@ textarea:focus-visible {
 .agent-memory-list{display:grid;gap:10px}.agent-memory-panel .operation-card{margin:0}
 .agent-memory-suggestion small{color:#64748b}.agent-memory-suggestion blockquote{white-space:pre-wrap;font-size:12px}
 .agent-context-warning{font-size:11px;color:#8a5a12;background:#fff8e8;border-radius:6px;padding:6px 8px;margin-bottom:8px}
+
+.jd-import-panel { margin-bottom: 18px; }
+.jd-import-candidates { display: grid; gap: 14px; padding: 18px; }
+.jd-import-candidate { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--border-color, #e2e7f0); border-radius: 10px; }
+.jd-import-candidate > div { flex: 1; min-width: 0; }
+.jd-import-candidate input { margin-top: 4px; }
+.jd-import-candidate p { margin: 5px 0 10px; color: var(--text-muted, #66758e); }
+.jd-import-candidate summary { cursor: pointer; }
+.jd-import-candidate .raw-jd-text { max-height: 280px; overflow: auto; margin-top: 10px; }

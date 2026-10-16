@@ -180,6 +180,9 @@ func (r *MarketRepository) ListByTarget(
 		if err := r.loadJDAbilityLevels(ctx, &result[i]); err != nil {
 			return nil, err
 		}
+		if err := r.loadJDAnalysis(ctx, &result[i]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -317,6 +320,9 @@ func (r *MarketRepository) FindByID(ctx context.Context, userID, jdID uuid.UUID)
 	if err == nil {
 		err = r.loadJDAbilityLevels(ctx, &result)
 	}
+	if err == nil {
+		err = r.loadJDAnalysis(ctx, &result)
+	}
 	return result, err
 }
 
@@ -425,6 +431,9 @@ func (r *MarketRepository) RetryAnalysis(ctx context.Context, userID, jdID uuid.
 	defer transaction.Rollback()
 
 	var preservePreviousResult bool
+	if _, err = transaction.ExecContext(ctx, `UPDATE jd_analysis_stages SET attempts=0,retryable=TRUE WHERE job_description_id=$1 AND status='failed' AND EXISTS(SELECT 1 FROM job_descriptions WHERE id=$1 AND user_id=$2)`, jdID, userID); err != nil {
+		return market.JobDescription{}, err
+	}
 	err = transaction.QueryRowContext(ctx, `
 		UPDATE analysis_jobs job
 		SET status = 'queued', attempts = 0, next_attempt_at = NOW(), locked_at = NULL,
@@ -444,7 +453,7 @@ func (r *MarketRepository) RetryAnalysis(ctx context.Context, userID, jdID uuid.
 		if _, err := transaction.ExecContext(ctx, `
 		UPDATE job_descriptions
 		SET status = 'processing', relevance_reason = NULL,
-		    document_type = NULL, validation_status = 'pending', validation_reason = NULL,
+		    validation_status = CASE WHEN EXISTS(SELECT 1 FROM jd_analysis_stages stage WHERE stage.job_description_id=job_descriptions.id AND stage.source_hash=encode(digest(job_descriptions.raw_text,'sha256'),'hex') AND stage.stage='extraction' AND stage.status='succeeded') THEN validation_status ELSE 'pending' END,
 		    updated_at = NOW()
 		WHERE id = $1 AND user_id = $2`, jdID, userID); err != nil {
 			return market.JobDescription{}, fmt.Errorf("reset jd status: %w", err)

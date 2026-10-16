@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/embedding"
@@ -15,6 +16,33 @@ import (
 type candidateSearch struct {
 	matches []AbilityMatch
 	calls   int
+}
+
+type normalizationFunction func(context.Context, string, string, string, string, any) error
+
+func (f normalizationFunction) GenerateJSON(ctx context.Context, key, model, system, prompt string, output any) error {
+	return f(ctx, key, model, system, prompt, output)
+}
+func TestNormalizerCorrectsOnlyMissingDecisions(t *testing.T) {
+	calls := 0
+	model := normalizationFunction(func(_ context.Context, _, _, _, prompt string, output any) error {
+		index := 0
+		calls++
+		if calls == 2 {
+			index = 1
+			if strings.Contains(prompt, "AutoGen") {
+				t.Error("already accepted identity decision was regenerated")
+			}
+		}
+		data, _ := json.Marshal(map[string]any{"decisions": []any{map[string]any{"index": index, "decision": "request_new", "reason": "目录没有该具体工具", "candidate": map[string]any{"category_code": "ai", "definition": "可独立评估的技术工具"}}}})
+		return json.Unmarshal(data, output)
+	})
+	normalizer := &VectorNormalizer{Model: model}
+	input := Result{AbilityRequirements: []AbilityRequirement{{Operator: RequirementAnyOf, RequiredCount: 1, Evidence: "AutoGen 或 LangGraph", Options: []AbilityRequirementOption{{RawLabel: "AutoGen", Evidence: "AutoGen"}, {RawLabel: "LangGraph", Evidence: "LangGraph"}}}}}
+	result, err := normalizer.Normalize(t.Context(), uuid.New(), "test", "test", Catalog{Abilities: []AbilityOption{{Code: "agent", Name: "Agent 开发", CategoryCode: "ai"}}}, input)
+	if err != nil || calls != 2 || len(result.AbilityRequirements) != 1 || len(result.AbilityRequirements[0].Options) != 2 {
+		t.Fatalf("local identity recovery: %v %#v calls=%d", err, result, calls)
+	}
 }
 
 func (s *candidateSearch) SearchAbilities(_ context.Context, _ []float32, _ int) ([]AbilityMatch, error) {
@@ -84,14 +112,14 @@ func TestVectorNormalizerDoesNotAutoAcceptNearestVector(t *testing.T) {
 	}
 }
 
-func TestVectorNormalizerWaitsForAbilityVectors(t *testing.T) {
+func TestVectorNormalizerMissingVectorsStillRequestsIndependentReview(t *testing.T) {
 	search := &candidateSearch{}
-	n := &VectorNormalizer{Embedder: testEmbedder(t), Search: search, Model: &normalizeModel{}}
+	model := &normalizeModel{result: map[string]any{"decisions": []any{map[string]any{"index": 0, "decision": "request_new", "reason": "当前目录没有该框架", "candidate": map[string]any{"category_code": "ai", "definition": "多智能体应用框架", "aliases": []string{}, "nearest_candidate_codes": []string{}}}}}}
+	n := &VectorNormalizer{Embedder: testEmbedder(t), Search: search, Model: model}
 	result := Result{AbilityRequirements: []AbilityRequirement{{Operator: RequirementSingle, RequiredCount: 1, Evidence: "熟悉 AutoGen", Options: []AbilityRequirementOption{{RawLabel: "AutoGen", Evidence: "AutoGen"}}}}}
-	_, err := n.Normalize(context.Background(), uuid.New(), "key", "model", Catalog{Abilities: []AbilityOption{{Code: "agent", Name: "Agent 开发", CategoryCode: "ai"}}}, result)
-	var classified *ClassifiedError
-	if !errors.As(err, &classified) || classified.FailureCode != "ability_vectors_unavailable" || !classified.CanRetry {
-		t.Fatalf("missing catalog vectors must not create a new ability: %v", err)
+	got, err := n.Normalize(context.Background(), uuid.New(), "key", "model", Catalog{Abilities: []AbilityOption{{Code: "agent", Name: "Agent 开发", CategoryCode: "ai"}}}, result)
+	if err != nil || got.AbilityRequirements[0].Options[0].Candidate == nil || got.AbilityRequirements[0].Options[0].CatalogCode != "" {
+		t.Fatalf("missing vectors must still route a real candidate to independent review: %v %#v", err, got)
 	}
 }
 

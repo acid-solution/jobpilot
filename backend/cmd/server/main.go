@@ -20,6 +20,7 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/httpapi"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/model/deepseek"
@@ -108,6 +109,9 @@ func run() error {
 	deepSeekClient := deepseek.NewClient(configuration.DeepSeekBaseURL, deepSeekHTTP)
 	modelConfigRepository := postgres.NewModelConfigRepository(database)
 	modelConfigService := modelconfig.NewService(modelConfigRepository, credentialCipher, deepSeekClient)
+	importRepository := postgres.NewJDImportRepository(database)
+	importService := &jdimport.Service{Repo: importRepository, Targets: targetService}
+	importWorker := &jdimport.Worker{Repo: importRepository, Credentials: modelConfigService, Detector: deepSeekClient}
 	embeddingRepository := postgres.NewEmbeddingRepository(database)
 	embeddingClient := embedding.NewClient(configuration.EmbeddingBaseURL, configuration.PlatformEmbeddingAPIKey, &http.Client{Timeout: 45 * time.Second, Transport: &modelusage.Transport{Repo: usageRepository, Provider: "bailian", Payer: "platform", Pricing: prices}})
 	profileRepository := postgres.NewProfileRepository(database)
@@ -140,11 +144,11 @@ func run() error {
 			Enabled: configuration.JobClassificationReviewEnabled, Reviewer: deepSeekClient,
 			APIKey: configuration.PlatformDeepSeekAPIKey, Model: configuration.PlatformReviewModel,
 		})
-	var vectorNormalizer *jdanalysis.VectorNormalizer
+	vectorNormalizer := &jdanalysis.VectorNormalizer{Model: deepSeekClient}
 	if configuration.EmbeddingEnabled && embeddingClient.Configured() {
 		vectorNormalizer = &jdanalysis.VectorNormalizer{Embedder: embeddingClient, Search: embeddingRepository, Model: deepSeekClient}
-		analysisWorker.SetNormalizer(vectorNormalizer)
 	}
+	analysisWorker.SetNormalizer(vectorNormalizer)
 	reviewRepository := postgres.NewAbilityReviewRepository(database, reviewQuota)
 	reviewWorker := abilityreview.NewWorker(reviewRepository, deepSeekClient, configuration.AbilityReviewEnabled,
 		configuration.PlatformDeepSeekAPIKey, configuration.PlatformReviewModel, 2*time.Second)
@@ -168,6 +172,7 @@ func run() error {
 		}()
 	}
 	startWorker(analysisWorker.Run)
+	startWorker(importWorker.Run)
 	startWorker(reviewWorker.Run)
 	startWorker(gradingWorker.Run)
 	startWorker(projectWorker.Run)
@@ -178,7 +183,6 @@ func run() error {
 		startWorker(embedding.NewWorker(embeddingRepository, embeddingClient).Run)
 		if embeddingClient.Configured() {
 			startWorker(profile.NewReassessmentWorker(postgres.NewMaterialReassessmentRepository(database, profileRepository, embeddingRepository), profileAssessor).Run)
-			startWorker(jdanalysis.NewNormalizationWorker(postgres.NewJDNormalizationRepository(database, analysisRepository, embeddingRepository), modelConfigService, vectorNormalizer).Run)
 		}
 	}
 	var agentService httpapi.AgentService
@@ -216,7 +220,8 @@ func run() error {
 			MutationLocker: mutationLocker,
 			Transactions:   agentRepository,
 			Targets:        targetService, Market: marketService, Profile: profileService,
-			Gaps: knowledgeGapsService, Projects: projectService, Credentials: modelConfigService,
+			Imports: importService,
+			Gaps:    knowledgeGapsService, Projects: projectService, Credentials: modelConfigService,
 			Vectors:          embeddingRepository,
 			Embedder:         embeddingClient,
 			EmbeddingEnabled: configuration.EmbeddingEnabled,
@@ -234,6 +239,7 @@ func run() error {
 		IdentityResolver:              resolver,
 		TargetService:                 targetService,
 		MarketService:                 marketService,
+		JDImports:                     importService,
 		ModelConfigService:            modelConfigService,
 		ProfileService:                profileService,
 		KnowledgeGapsService:          knowledgeGapsService,

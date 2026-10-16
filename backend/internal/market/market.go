@@ -38,6 +38,7 @@ const (
 )
 
 type JobDescription struct {
+	Analysis              AnalysisState               `json:"analysis"`
 	ID                    uuid.UUID                   `json:"id"`
 	TargetID              uuid.UUID                   `json:"target_id"`
 	Title                 string                      `json:"title,omitempty"`
@@ -64,6 +65,22 @@ type JobDescription struct {
 	UpdatedAt             time.Time                   `json:"updated_at"`
 	AbilityReview         AbilityReviewSummary        `json:"ability_review"`
 	AbilityGrading        AbilityGradingSummary       `json:"ability_grading"`
+}
+
+type AnalysisStage struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Attempts  int    `json:"attempts"`
+}
+type AnalysisState struct {
+	Version         string                          `json:"version"`
+	Stages          []AnalysisStage                 `json:"stages"`
+	Warnings        []string                        `json:"warnings"`
+	Classifications []jdanalysis.JobClassification  `json:"classifications"`
+	Requirements    []jdanalysis.AbilityRequirement `json:"requirements"`
+	HasPending      bool                            `json:"has_pending"`
+	NextPollMS      int                             `json:"next_poll_ms"`
 }
 
 type AbilityReviewSummary struct {

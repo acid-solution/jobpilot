@@ -310,13 +310,10 @@ func (c *Client) ReviewAbility(ctx context.Context, apiKey, model string, input 
 	}
 	payload := map[string]any{"candidate": map[string]any{"name": input.Name, "category_code": input.CategoryCode, "aliases": input.Aliases, "definition": input.Definition, "reason": input.ApplicationReason, "nearest_candidate_codes": input.NearestCandidateCodes}, "evidence": input.Evidence, "catalog": input.Catalog}
 	encoded, _ := json.Marshal(payload)
-	output, err := c.chatDetailed(ctx, apiKey, chatRequest{Model: model, Messages: []message{{Role: "system", Content: abilityReviewPrompt}, {Role: "user", Content: string(encoded)}}, Thinking: thinking{Type: "disabled"}, ResponseFormat: responseFormat{Type: "json_object"}, MaxTokens: 1800})
-	if err != nil {
-		return abilityreview.Result{}, err
-	}
 	var result abilityreview.Result
-	if err := json.Unmarshal([]byte(output.Choices[0].Message.Content), &result); err != nil {
-		return result, fmt.Errorf("model_invalid_json: %w", err)
+	output, err := c.structuredJDResponse(ctx, apiKey, model, abilityReviewPrompt, string(encoded), 2400, func(data []byte) error { result = abilityreview.Result{}; return json.Unmarshal(data, &result) })
+	if err != nil {
+		return result, err
 	}
 	result.Provider = "deepseek"
 	result.Model = model

@@ -299,7 +299,7 @@ func (r *AnalysisRepository) Complete(ctx context.Context, job jdanalysis.Job, r
 	if _, err := transaction.ExecContext(ctx, `
 		UPDATE job_descriptions
 		SET title = $2, company = $3, employment_type = $4,
-		    responsibilities = $5, ability_mentions = $6, conditions = $7,
+		    responsibilities = $5, ability_mentions = CASE WHEN EXISTS(SELECT 1 FROM jd_analysis_stages s WHERE s.job_description_id=job_descriptions.id AND s.source_hash=encode(digest(job_descriptions.raw_text,'sha256'),'hex') AND s.stage='ability_resolution' AND s.status='succeeded') THEN ability_mentions ELSE $6::jsonb END, conditions = $7,
 		    document_type = $8, validation_status = $9, validation_reason = $10,
 		    analysis_provider = $11, analysis_model = $12, analysis_prompt_version = $13,
 		    normalization_prompt_version = CASE WHEN $27 THEN $28::varchar ELSE '' END,
@@ -463,15 +463,6 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_classifications WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
 		return classificationOutcome{}, fmt.Errorf("clear JD classifications: %w", err)
 	}
-	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_abilities WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
-		return classificationOutcome{}, fmt.Errorf("clear JD abilities: %w", err)
-	}
-	if err := invalidateRunningJDAbilityGrading(ctx, transaction, job.JobDescriptionID); err != nil {
-		return classificationOutcome{}, err
-	}
-	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_ability_requirements WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
-		return classificationOutcome{}, fmt.Errorf("clear JD ability requirements: %w", err)
-	}
 
 	saved := make([]savedClassification, 0, len(result.Classifications))
 	for _, classification := range result.Classifications {
@@ -512,6 +503,34 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 		saved = append(saved, item)
 	}
 
+	outcome, err := determineTargetRelationship(ctx, transaction, job.TargetID, result.EmploymentType, saved)
+	if err != nil {
+		return classificationOutcome{}, err
+	}
+	var published bool
+	if err := transaction.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jd_analysis_stages WHERE job_description_id=$1 AND source_hash=$2 AND stage='ability_resolution' AND status='succeeded')`, job.JobDescriptionID, sourceHash(job.RawText)).Scan(&published); err != nil {
+		return classificationOutcome{}, err
+	}
+	if !published {
+		if err := saveJDAbilities(ctx, transaction, job, result, outcome.status == "included"); err != nil {
+			return classificationOutcome{}, err
+		}
+	}
+
+	return outcome, nil
+}
+
+func saveJDAbilities(ctx context.Context, transaction *sql.Tx, job jdanalysis.Job, result jdanalysis.Result, enqueue bool) error {
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_abilities WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
+		return fmt.Errorf("clear JD abilities: %w", err)
+	}
+	if err := invalidateRunningJDAbilityGrading(ctx, transaction, job.JobDescriptionID); err != nil {
+		return err
+	}
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM job_description_ability_requirements WHERE job_description_id = $1`, job.JobDescriptionID); err != nil {
+		return fmt.Errorf("clear JD ability requirements: %w", err)
+	}
+
 	for _, mention := range result.AbilityMentions {
 		if mention.CatalogCode == "" {
 			continue
@@ -525,7 +544,7 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 			WHERE ability.code = $2 AND ability.is_active
 			ON CONFLICT DO NOTHING`, job.JobDescriptionID, mention.CatalogCode,
 			mention.Name, mention.Evidence, mention.RequiredLevel); err != nil {
-			return classificationOutcome{}, fmt.Errorf("save normalized JD ability: %w", err)
+			return fmt.Errorf("save normalized JD ability: %w", err)
 		}
 	}
 
@@ -539,7 +558,7 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 			RETURNING id`, job.JobDescriptionID, requirement.Operator,
 			requirement.RequiredCount, requirement.RequirementKind, requirement.Evidence, requirementIndex+1,
 		).Scan(&requirementID); err != nil {
-			return classificationOutcome{}, fmt.Errorf("save JD ability requirement: %w", err)
+			return fmt.Errorf("save JD ability requirement: %w", err)
 		}
 		for optionIndex, option := range requirement.Options {
 			metadata, _ := json.Marshal(option.Candidate)
@@ -553,31 +572,27 @@ func saveJDClassification(ctx context.Context, transaction *sql.Tx, job jdanalys
 					$3, $4, $5, $6, $7, CASE WHEN $2='' THEN 'pending_review' ELSE 'resolved' END, $8, $9
 				) RETURNING id`, requirementID, option.CatalogCode, option.RawLabel, option.Qualifier,
 				option.Evidence, option.RequiredLevel, optionIndex+1, metadata, option.NormalizationReason).Scan(&optionID); err != nil {
-				return classificationOutcome{}, fmt.Errorf("save JD ability requirement option: %w", err)
+				return fmt.Errorf("save JD ability requirement option: %w", err)
 			}
 			if option.CatalogCode == "" {
 				pending = append(pending, pendingAbilityOption{id: optionID, option: option})
 			}
 		}
 	}
-	outcome, err := determineTargetRelationship(ctx, transaction, job.TargetID, result.EmploymentType, saved)
-	if err != nil {
-		return classificationOutcome{}, err
-	}
-	if outcome.status == "included" {
+	if enqueue {
 		if err := enqueueJDResultAliases(ctx, transaction, job.UserID, job.JobDescriptionID, result); err != nil {
-			return classificationOutcome{}, err
+			return err
 		}
 		for _, item := range pending {
 			if err := enqueueAbilityReview(ctx, transaction, job.UserID, item); err != nil {
-				return classificationOutcome{}, err
+				return err
 			}
 		}
 		if err := cleanupRequirementGroups(ctx, transaction, job.JobDescriptionID); err != nil {
-			return classificationOutcome{}, err
+			return err
 		}
 	}
-	return outcome, nil
+	return syncJDAbilityMentions(ctx, transaction, job.JobDescriptionID)
 }
 
 func enqueueAbilityReview(ctx context.Context, tx *sql.Tx, userID uuid.UUID, pending pendingAbilityOption) error {
@@ -758,6 +773,12 @@ func (r *AnalysisRepository) Fail(ctx context.Context, job jdanalysis.Job, code 
 
 func analysisFailureReason(code string) string {
 	switch code {
+	case "classification_unresolved":
+		return "内容提取结果已保存，岗位职责暂时无法对应合法分类，请补充职责后重试分类。"
+	case "classification_rejected":
+		return "岗位分类未能匹配已有目录，新增分类审核未通过；已提取内容已保留。"
+	case "classification_review_not_configured":
+		return "内容提取结果已保存，平台岗位分类审核服务未配置，请配置后重试此阶段。"
 	case "model_invalid_response":
 		return "模型返回的结构化结果不符合要求，系统自动重试后仍未通过，请重新分析。"
 	case "model_not_configured", "model_configuration_unavailable":
@@ -765,7 +786,7 @@ func analysisFailureReason(code string) string {
 	case "catalog_unavailable":
 		return "岗位或能力目录暂时不可用，请稍后重新分析。"
 	case "ability_normalization_unavailable":
-		return "能力归一化服务未配置，JD 原文已保存；请启用向量服务后重新分析。"
+		return "能力处理服务暂时不可用，已提取内容已保存；请稍后重试能力处理。"
 	case "ability_vectors_unavailable":
 		return "能力目录向量尚未准备好，JD 原文已保存；请稍后重新分析。"
 	default:

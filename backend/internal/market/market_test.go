@@ -103,7 +103,6 @@ func TestSubmitRejectsObviousGarbageBeforeReadingTarget(t *testing.T) {
 	for _, text := range []string{
 		"https://example.com/jobs/1234567890",
 		"##############################",
-		"岗位要求岗位要求岗位要求岗位要求岗位要求岗位要求",
 	} {
 		_, err := service.Submit(context.Background(), uuid.New(), text)
 		if !errors.Is(err, ErrInvalidJDText) {

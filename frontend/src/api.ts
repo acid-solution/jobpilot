@@ -39,6 +39,7 @@ export interface SaveTargetInput {
 }
 
 export interface JobDescription {
+	analysis?: { version: string; stages: Array<{ name: string; status: string; error_code?: string; attempts: number }>; warnings?: string[]; requirements?: Array<{ Operator: string; RequiredCount: number; RequirementKind: string; Evidence: string; Options: Array<{ RawLabel: string; Qualifier: string }> }>; classifications?: Array<{ category_code: string; specialty_code: string; relation: string; evidence: string; reason: string; candidate?: { specialty_name: string } }>; has_pending: boolean; next_poll_ms: number }
   id: string
   target_id: string
   title?: string
@@ -94,6 +95,9 @@ export interface MarketAbilityEvidence {
   evidence: string
   qualifier?: string
 }
+
+export interface JDImportCandidate { id: string; title: string; company: string; raw_text: string; block_ids: string[]; jd_id?: string; duplicate?: boolean }
+export interface JDImportSession { id: string; target_id: string; replacement_jd_id?: string; status: 'queued' | 'running' | 'ready' | 'confirmed' | 'empty' | 'failed'; candidates: JDImportCandidate[]; error_code?: string; has_pending: boolean; next_poll_ms: number; updated_at: string }
 
 export interface MarketAbilitySummary {
   ability_id: string
@@ -534,6 +538,10 @@ export const authAPI = {
 }
 
 export const jobPilotAPI = {
+	startJDImport: (raw_text: string, replacement_jd_id?: string) => request<JDImportSession>('/api/v1/jd-imports', { method: 'POST', body: JSON.stringify({ raw_text, replacement_jd_id }) }),
+	listJDImports: () => request<JDImportSession[]>('/api/v1/jd-imports'),
+	confirmJDImport: (id: string, candidate_ids: string[]) => request<JDImportSession>(`/api/v1/jd-imports/${id}/confirm`, { method: 'POST', body: JSON.stringify({ candidate_ids }) }),
+	retryJDImport: (id: string) => request<JDImportSession>(`/api/v1/jd-imports/${id}/retry`, { method: 'POST' }),
   getModelUsageSummary: (query: string) => request<import('./modelUsageTypes').UsageSummary[]>(`/api/v1/model-usage/summary?${query}`),
   getModelUsageOperations: (query: string) => request<import('./modelUsageTypes').UsagePage<import('./modelUsageTypes').UsageOperation>>(`/api/v1/model-usage/operations?${query}`),
   getModelUsageCalls: (query: string) => request<import('./modelUsageTypes').UsagePage<import('./modelUsageTypes').UsageCall>>(`/api/v1/model-usage/calls?${query}`),

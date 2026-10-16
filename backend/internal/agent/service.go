@@ -14,6 +14,7 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/embedding"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
@@ -99,6 +100,7 @@ type Service struct {
 	Transactions     ActionTransactions
 	Targets          TargetService
 	Market           MarketService
+	Imports          *jdimport.Service
 	Profile          ProfileService
 	Gaps             GapsService
 	Projects         ProjectsService

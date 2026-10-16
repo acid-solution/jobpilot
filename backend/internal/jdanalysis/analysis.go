@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "jd-raw-abilities-v14"
+const PromptVersion = "jd-source-stages-v15"
 const NormalizationPromptVersion = "jd-vector-candidates-v12"
 const ClassificationReviewPromptVersion = "job-classification-review-v1"
 
@@ -172,6 +172,7 @@ type ClassificationReviewResult struct {
 }
 
 type Result struct {
+	Warnings             []string                `json:"warnings,omitempty"`
 	VectorNormalized     bool                    `json:"-"`
 	OriginalOptions      []AbilityOptionSnapshot `json:"-"`
 	AliasProposals       []AbilityAliasProposal  `json:"-"`
@@ -364,30 +365,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 
-	result, err := w.analyzer.AnalyzeJD(taskCtx, credentials.APIKey, credentials.Model, job.RawText, catalog)
-	if err == nil && result.ValidationStatus == ValidationValid && len(result.AbilityRequirements) > 0 {
-		if w.normalizer == nil {
-			err = NewError("ability_normalization_unavailable", true, errors.New("JD ability normalization requires configured embeddings"))
-		} else {
-			result, err = w.normalizer.Normalize(taskCtx, job.UserID, credentials.APIKey, credentials.Model, catalog, result)
-		}
-	}
-	if err == nil && result.ValidationStatus == ValidationValid && w.classificationReview.Enabled {
-		if w.classificationReview.Reviewer == nil || strings.TrimSpace(w.classificationReview.APIKey) == "" {
-			err = NewError("classification_review_not_configured", false, errors.New("classification review platform model is not configured"))
-		} else {
-			var reviewed ClassificationReviewResult
-			reviewed, err = w.classificationReview.Reviewer.ReviewJobClassifications(
-				modelusage.For(taskCtx, job.UserID, job.ID, "jd_analysis", "platform"), w.classificationReview.APIKey, w.classificationReview.Model, job.RawText,
-				ClassificationReviewInput{Title: result.Title, Responsibilities: result.Responsibilities,
-					Classifications: result.Classifications, Catalog: catalog.JobCategories},
-			)
-			if err == nil {
-				result.Classifications = reviewed.Classifications
-				result.ClassificationReview = &reviewed
-			}
-		}
-	}
+	result, err := w.analyze(taskCtx, job, credentials, catalog)
 	cancelHeartbeat()
 	leaseErr := <-heartbeatDone
 	if errors.Is(leaseErr, ErrLeaseLost) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   ArrowRight,
@@ -15,13 +15,16 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { jobPilotAPI, type JobDescription, type MarketAbilitySummary, type MarketProfile } from '../api'
+import { jobPilotAPI, type JobDescription, type MarketAbilitySummary } from '../api'
+import { useMarketData } from './useMarketData'
+import { JDImportPanel } from './JDImportPanel'
 
 type MarketTab = 'jobs' | 'abilities'
 type DrawerMode = 'add' | 'edit' | 'detail' | 'ability' | null
 type JDStatus = 'included' | 'processing' | 'reference' | 'excluded' | 'failed'
 
 interface JDSample {
+	analysis?: JobDescription['analysis']
   id: string
   title: string
   company: string
@@ -259,20 +262,15 @@ function requirementKindLabel(kind: 'required' | 'preferred' | 'unspecified') {
 	return '普通要求'
 }
 
-function splitBatchText(value: string) {
-	return value
-		.replace(/\r\n?/g, '\n')
-		.split(/(?:^|\n)\s*-{3,}\s*(?:\n|$)|\f+/)
-		.map((item) => item.trim())
-		.filter(Boolean)
-}
-
 function analysisFailureCopy(code?: string) {
 	switch (code) {
+		case 'classification_unresolved': return { label: '岗位分类未完成', reason: '已提取的内容已保留，岗位职责暂时无法对应合法分类，可补充原文后重试分类。' }
+		case 'classification_rejected': return { label: '岗位分类审核未通过', reason: '岗位未能匹配已有分类，新增分类审核也未通过；已提取的内容仍然保留。' }
+		case 'classification_review_not_configured': return { label: '岗位分类审核未配置', reason: '已提取内容已保存，请配置平台分类审核服务后重试此阶段。' }
 		case 'model_invalid_response':
 			return {
-				label: '模型结果未通过校验',
-				reason: '模型返回的结构化结果不符合要求，系统自动重试后仍未通过。JD 原文已保存，可重新分析。',
+				label: '内容结构需要重试',
+				reason: '本阶段返回的结构仍无法处理。已保存的内容会保留，重试会从失败阶段继续。',
 			}
 		case 'model_not_configured':
 		case 'model_configuration_unavailable':
@@ -288,7 +286,7 @@ function analysisFailureCopy(code?: string) {
 		case 'ability_normalization_unavailable':
 			return {
 				label: '能力归一化未配置',
-				reason: 'JD 原文已保存，请启用向量服务后重新分析。',
+				reason: '已提取内容已保存，请稍后重试能力处理。',
 			}
 		case 'ability_vectors_unavailable':
 			return {
@@ -335,6 +333,7 @@ function mapJD(item: JobDescription): JDSample {
 	      ? '无'
 	      : '等待分类'
   return {
+    analysis: item.analysis,
     id: item.id,
     title: item.title || (pollable ? '正在识别岗位名称' : '岗位名称未提取'),
     company: item.company || (pollable ? '待识别公司' : '公司名称未提取'),
@@ -372,43 +371,12 @@ export function MarketPage() {
 	const [editRawJD, setEditRawJD] = useState('')
 	const [searchQuery, setSearchQuery] = useState('')
 	const [statusFilter, setStatusFilter] = useState<'all' | JDStatus>('all')
-  const [samples, setSamples] = useState<JDSample[]>([])
-	const [allSamples, setAllSamples] = useState<JDSample[]>([])
-	const [profile, setProfile] = useState<MarketProfile>({ included_jd_count: 0, required_jd_count: 10, complete: false, ability_grading_pending_count: 0, ability_grading_failed_count: 0, abilities: [] })
+  const data = useMarketData(searchQuery, statusFilter)
+  const { profile, imports, loading, error, setError, reload: loadJDs } = data
+  const samples = useMemo(() => data.items.map(mapJD), [data.items])
+  const allSamples = useMemo(() => data.all.map(mapJD), [data.all])
   const [notice, setNotice] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
-
-  const loadJDs = useCallback(async (showLoading = true) => {
-	if (showLoading) setLoading(true)
-    setError('')
-    try {
-	  const filters = {
-		statuses: statusFilter === 'all' ? undefined : [statusFilter],
-		query: searchQuery,
-	  }
-	  const hasFilters = statusFilter !== 'all' || searchQuery.trim() !== ''
-	  const filteredRequest = jobPilotAPI.listJDs(filters)
-	  const [result, allResult, marketProfile] = await Promise.all([
-		filteredRequest,
-		hasFilters ? jobPilotAPI.listJDs() : filteredRequest,
-		jobPilotAPI.getMarketProfile(),
-	  ])
-	  setSamples(result.map(mapJD))
-	  setAllSamples(allResult.map(mapJD))
-	  setProfile(marketProfile)
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '读取 JD 失败')
-    } finally {
-	  if (showLoading) setLoading(false)
-    }
-  }, [searchQuery, statusFilter])
-
-  useEffect(() => {
-    void loadJDs()
-  }, [loadJDs])
-
   const selectedJD = useMemo(
     () => samples.find((sample) => sample.id === selectedId) ?? null,
     [samples, selectedId],
@@ -419,18 +387,7 @@ export function MarketPage() {
   )
 	const includedCount = profile.included_jd_count
   const processingCount = allSamples.filter((sample) => sample.status === 'processing').length
-	const pollableCount = allSamples.filter((sample) => sample.jobStatus === 'queued' || sample.jobStatus === 'running' ||
-		(!sample.abilityGrading?.paused && (sample.abilityGrading?.status === 'queued' || sample.abilityGrading?.status === 'running')) ||
-		((sample.abilityReview?.pending_count ?? 0) > 0 && !sample.abilityReview?.blocked && (!sample.abilityReview?.next_attempt_at || new Date(sample.abilityReview.next_attempt_at).getTime() <= Date.now() + 60_000))).length + profile.ability_grading_pending_count
-  const notIncludedCount = allSamples.length - includedCount - processingCount
-
-  useEffect(() => {
-	if (pollableCount === 0) return
-    const timer = window.setInterval(() => {
-	  void loadJDs(false)
-    }, 2000)
-    return () => window.clearInterval(timer)
-	}, [loadJDs, pollableCount])
+	const notIncludedCount = allSamples.length - includedCount - processingCount
 
   const closeDrawer = () => {
     setDrawerMode(null)
@@ -453,20 +410,8 @@ export function MarketPage() {
     setSubmitting(true)
     setError('')
     try {
-	  if (entryMode === 'single') {
-		const created = await jobPilotAPI.createJD(content)
-		setSamples((current) => [mapJD(created), ...current])
-		setAllSamples((current) => [mapJD(created), ...current])
-		setNotice('JD 原文和分析任务均已保存。分析完成前暂不计入市场画像。')
-	  } else {
-		const entries = splitBatchText(content)
-		if (entries.length === 0 || entries.length > 50) {
-			setError('一次需要导入 1～50 份 JD，请用单独一行 --- 分隔。')
-			return
-		}
-		const result = await jobPilotAPI.createJDBatch(entries)
-		setNotice(`批量处理完成：新增 ${result.created_count} 份，重复 ${result.duplicate_count} 份，无效 ${result.invalid_count} 份。`)
-	  }
+      await jobPilotAPI.startJDImport(content)
+      setNotice('材料已保存，正在识别岗位。发现多个岗位时会先让你选择。')
       setRawJD('')
       closeDrawer()
 	  await loadJDs()
@@ -482,12 +427,10 @@ export function MarketPage() {
 		setSubmitting(true)
 		setError('')
 		try {
-			const updated = await jobPilotAPI.updateJD(selectedJD.id, editRawJD)
-			const mapped = mapJD(updated)
-			setSamples((current) => current.map((sample) => sample.id === selectedJD.id ? mapped : sample))
-			setAllSamples((current) => current.map((sample) => sample.id === selectedJD.id ? mapped : sample))
-			setDrawerMode('detail')
-			setNotice('JD 原文已更新，并已重新进入分析队列。')
+			await jobPilotAPI.startJDImport(editRawJD, selectedJD.id)
+			closeDrawer()
+			setNotice('修改内容已保存，正在重新识别；原有结果会保留到确认新的岗位内容。')
+			await loadJDs(false)
 		} catch (updateError) {
 			setError(updateError instanceof Error ? updateError.message : '更新 JD 失败')
 		} finally {
@@ -500,8 +443,7 @@ export function MarketPage() {
 		setError('')
 		try {
 			await jobPilotAPI.deleteJD(selectedJD.id)
-			setSamples((current) => current.filter((sample) => sample.id !== selectedJD.id))
-			setAllSamples((current) => current.filter((sample) => sample.id !== selectedJD.id))
+			data.remove(selectedJD.id)
 			closeDrawer()
 			setNotice('JD 已删除，市场画像已同步更新。')
 			await loadJDs()
@@ -520,15 +462,18 @@ export function MarketPage() {
 		setRawJD(await file.text())
 	}
 
-	const applyUpdatedJD = (updated: JobDescription) => {
-		const mapped = mapJD(updated)
-		setSamples((current) => current.map((sample) => sample.id === updated.id ? mapped : sample))
-		setAllSamples((current) => current.map((sample) => sample.id === updated.id ? mapped : sample))
-	}
+	const applyUpdatedJD = (updated: JobDescription) => data.upsert(updated)
 
   const retryJD = async (id: string) => {
     setError('')
     try {
+      const current = allSamples.find(sample => sample.id === id)
+      if (current && !current.analysis?.stages.length) {
+        await jobPilotAPI.startJDImport(current.rawText, id)
+        setNotice('正在用新的流程识别原文；多个岗位会先让你选择。')
+        await loadJDs(false)
+        return
+      }
       const updated = await jobPilotAPI.retryJD(id)
       applyUpdatedJD(updated)
       setNotice('分析任务已重新进入队列。')
@@ -581,6 +526,10 @@ export function MarketPage() {
       )}
       {error && <div className="market-error" role="alert"><AlertCircle size={17} /><span>{error}</span></div>}
 
+      {imports.map(session => <JDImportPanel key={session.id} session={session}
+        onConfirm={async ids => { await jobPilotAPI.confirmJDImport(session.id, ids); setNotice('所选岗位已导入，正在分别提取内容并处理分类与能力。'); await loadJDs(false) }}
+        onRetry={async () => { await jobPilotAPI.retryJDImport(session.id); await loadJDs(false) }} />)}
+
       <section className="market-progress" aria-label="市场画像完成进度">
         <div className="progress-copy">
           <span className="eyebrow">完成门槛</span>
@@ -632,7 +581,7 @@ export function MarketPage() {
           </div>
           <div className="jd-list">
             {loading && <div className="market-empty">正在读取当前目标下的 JD……</div>}
-			{!loading && samples.length === 0 && <div className="market-empty">{searchQuery || statusFilter !== 'all' ? '没有符合当前筛选条件的 JD。' : '还没有 JD。请粘贴一份完整岗位说明开始建立市场画像。'}</div>}
+			{!loading && samples.length === 0 && <div className="market-empty">{searchQuery || statusFilter !== 'all' ? '没有符合当前筛选条件的 JD。' : '还没有 JD。可粘贴招聘网页文字开始建立市场画像。'}</div>}
             {samples.map((sample) => {
               const StatusIcon = statusIcons[sample.status]
               return (
@@ -695,19 +644,19 @@ export function MarketPage() {
 
             {drawerMode === 'add' ? (
               <div className="drawer-body add-jd-form">
-				<div className="drawer-intro"><FileText size={19} /><p>粘贴招聘页面中的完整岗位说明。系统会检查重复内容，再创建后台分析任务。</p></div>
+				<div className="drawer-intro"><FileText size={19} /><p>直接粘贴招聘网页文字，允许包含导航、广告和多个岗位。识别出多个岗位后，由你选择要导入的岗位。</p></div>
 				<div className="entry-mode-switch" role="tablist" aria-label="导入方式">
 					<button type="button" className={entryMode === 'single' ? 'is-current' : ''} onClick={() => setEntryMode('single')}>单份录入</button>
 					<button type="button" className={entryMode === 'batch' ? 'is-current' : ''} onClick={() => setEntryMode('batch')}>批量导入</button>
 				</div>
-				<label htmlFor="raw-jd">{entryMode === 'single' ? '完整 JD' : '多份完整 JD'}</label>
-				<textarea id="raw-jd" value={rawJD} onChange={(event) => setRawJD(event.target.value)} placeholder={entryMode === 'single' ? '请粘贴岗位名称、岗位职责、任职要求等完整内容……' : '粘贴多份 JD，并在每两份之间单独输入一行 ---'} autoFocus />
+				<label htmlFor="raw-jd">{entryMode === 'single' ? '招聘材料' : '包含多个岗位的材料'}</label>
+				<textarea id="raw-jd" value={rawJD} onChange={(event) => setRawJD(event.target.value)} placeholder={entryMode === 'single' ? '粘贴招聘网页上的岗位描述，混有无关文字也可以……' : '粘贴多个岗位的描述，系统会识别候选，再由你选择。'} autoFocus />
 				{entryMode === 'batch' && <label className="text-file-import"><Upload size={16} /><span>从 .txt 文件读取</span><input type="file" accept=".txt,text/plain" onChange={(event) => void importTextFile(event.target.files?.[0])} /></label>}
-				<p className="field-help">{entryMode === 'single' ? '岗位名称、公司和分类由系统从原文识别。完全相同的 JD 不会重复保存。' : `使用单独一行 --- 分隔，每次最多 50 份。当前识别到 ${splitBatchText(rawJD).length} 份。`}</p>
+				<p className="field-help">可直接粘贴网页文字，系统会忽略导航和广告。识别到多个岗位后先选择，再确认导入；每次最多 50 份。</p>
                 <div className="drawer-actions">
                   <button className="button" type="button" onClick={closeDrawer}>取消</button>
                   <button className="button button-primary" type="button" onClick={addJD} disabled={!rawJD.trim() || submitting}>
-					{submitting ? '保存中……' : entryMode === 'batch' ? '批量保存并分析' : '保存并开始分析'} <ArrowRight size={15} />
+					{submitting ? '保存中……' : entryMode === 'batch' ? '保存并识别岗位' : '保存并识别岗位'} <ArrowRight size={15} />
                   </button>
                 </div>
               </div>
@@ -815,6 +764,9 @@ export function MarketPage() {
                   <h3>JD 原文</h3>
                   <div className="raw-jd-text">{selectedJD.rawText}</div>
                 </section>
+				{!!selectedJD.analysis?.stages.length && <section><h3>处理进度</h3><ul className="jd-fact-list">{selectedJD.analysis.stages.map(stage => <li key={stage.name}>{({ extraction: '内容提取', classification: '岗位分类', ability_resolution: '能力归一化', classification_review: '岗位目录审核' } as Record<string, string>)[stage.name] ?? stage.name}：{stage.status === 'succeeded' ? '已完成' : stage.status === 'failed' ? analysisFailureCopy(stage.error_code).label : '处理中'}</li>)}</ul>{selectedJD.analysis.warnings?.map(warning => <p className="detail-muted" key={warning}>{warning}</p>)}</section>}
+					{!!selectedJD.analysis?.requirements?.length && <section><h3>原始技术要求</h3><p className="detail-muted">保留原文要求关系；能力目录归属以审核结果为准。</p><ul className="jd-fact-list">{selectedJD.analysis.requirements.map((group,index)=><li key={index}>{group.RequirementKind==='preferred'?'加分：':''}{group.Operator==='any_of'?'任选一项：':group.Operator==='at_least_n'?`至少 ${group.RequiredCount} 项：`:''}{group.Options.map(option=>`${option.RawLabel}${option.Qualifier?`（${option.Qualifier}）`:''}`).join('、')}<details><summary>查看原文依据</summary><p>{group.Evidence}</p></details></li>)}</ul></section>}
+					{!!selectedJD.analysis?.classifications?.length && <section><h3>分类依据与提议</h3><ul className="jd-fact-list">{selectedJD.analysis.classifications.map((item,index)=><li key={index}>{item.candidate?`待审核分类：${item.candidate.specialty_name}。`:''}{item.reason}<details><summary>查看职责依据</summary><p>{item.evidence}</p></details></li>)}</ul></section>}
 				<div className="jd-management-actions">
 					<button className="button" type="button" onClick={() => { setEditRawJD(selectedJD.rawText); setDrawerMode('edit') }}><Pencil size={15} />编辑原文</button>
 					<button className="button danger-button" type="button" onClick={() => void deleteJD()}><Trash2 size={15} />删除 JD</button>

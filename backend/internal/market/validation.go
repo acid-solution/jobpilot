@@ -14,36 +14,28 @@ var urlPattern = regexp.MustCompile(`(?i)\b(?:https?://|www\.)\S+`)
 func ValidateJDText(rawText string) error {
 	text := strings.TrimSpace(rawText)
 	runes := []rune(text)
-	if len(runes) < 20 || len(runes) > 100000 {
+	if len(runes) == 0 || len(runes) > 100000 {
 		return ErrInvalidJDText
 	}
 
 	withoutURLs := urlPattern.ReplaceAllString(text, " ")
 	letterCount := 0
 	compact := make([]rune, 0, len(runes))
-	counts := make(map[rune]int)
 	for _, current := range []rune(withoutURLs) {
 		if unicode.IsSpace(current) {
 			continue
 		}
 		compact = append(compact, current)
-		counts[current]++
 		if unicode.IsLetter(current) {
 			letterCount++
 		}
 	}
-	if letterCount < 10 || len(compact) == 0 {
+	if letterCount == 0 || len(compact) == 0 {
 		return ErrInvalidJDText
 	}
 
-	for _, count := range counts {
-		if count*10 >= len(compact)*8 {
-			return ErrInvalidJDText
-		}
-	}
-	if isMostlyRepeatedPhrase(compact) {
-		return ErrInvalidJDText
-	}
+	// Repeated page furniture must not hide a valid JD elsewhere in the text.
+	// Semantic rejection happens after scanning all source windows.
 	return nil
 }
 

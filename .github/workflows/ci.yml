@@ -1,0 +1,186 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: jobpilot_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U postgres -d jobpilot_ci"
+          --health-interval=5s --health-timeout=3s --health-retries=30
+    env:
+      JOBPILOT_TEST_DATABASE_URL: postgres://postgres:ci-only-password@127.0.0.1:5432/jobpilot_ci?sslmode=disable
+      TEST_DATABASE_URL: postgres://postgres:ci-only-password@127.0.0.1:5432/jobpilot_ci?sslmode=disable
+      JOBPILOT_ADMIN_DATABASE_URL: postgres://postgres:ci-only-password@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Migrate disposable database before repository tests
+        run: go test -race -count=1 -v ./internal/storage/postgres -run '^TestMigrationsSmoke$'
+      - name: Unit and real PostgreSQL integration tests
+        run: go test -race -count=1 -v ./...
+      - run: go vet ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  deployment-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Test deployment scripts in an isolated container
+        run: |
+          docker run --rm --network none -v "$PWD/deploy:/source:ro" \
+            --entrypoint bash pgvector/pgvector:0.8.6-pg17 /source/test-deployment.sh
+
+  image:
+    needs: [backend, frontend, deployment-scripts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      auth_digest: ${{ steps.auth-build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image; publish only trusted main
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            GOPROXY=https://proxy.golang.org,direct
+            NPM_REGISTRY=https://registry.npmjs.org/
+          cache-from: type=gha,scope=jobpilot
+          cache-to: type=gha,mode=max,scope=jobpilot
+      - name: Checkout pinned authentication dependency
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: acid-solution/shared-auth
+          ref: 246e0a27fb90401dd58817339b4df4d868d31b2b
+          path: .auth-source
+          persist-credentials: false
+      - name: Publish pinned authentication dependency
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: auth-build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .auth-source
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/acid-solution/jobpilot-auth:246e0a27fb90401dd58817339b4df4d868d31b2b
+          labels: |
+            org.opencontainers.image.source=https://github.com/acid-solution/jobpilot
+            org.opencontainers.image.revision=246e0a27fb90401dd58817339b4df4d868d31b2b
+          cache-from: type=gha,scope=shared-auth
+          cache-to: type=gha,mode=max,scope=shared-auth
+      - name: Record immutable image references
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          AUTH_IMAGE: ghcr.io/acid-solution/jobpilot-auth@${{ steps.auth-build.outputs.digest }}
+        run: |
+          printf 'Application image: %s\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Authentication image: %s\n' "$AUTH_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: image
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy tested image over SSH
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          IMAGE: ghcr.io/${{ github.repository }}@${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?missing DEPLOY_HOST}" "${DEPLOY_PORT:?missing DEPLOY_PORT}"
+          : "${DEPLOY_USER:?missing DEPLOY_USER}" "${DEPLOY_PATH:?missing DEPLOY_PATH}"
+          : "${DEPLOY_SSH_KEY:?missing DEPLOY_SSH_KEY}" "${DEPLOY_KNOWN_HOSTS:?missing DEPLOY_KNOWN_HOSTS}"
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9/_-]+$ ]] || exit 1
+          umask 077
+          key="$RUNNER_TEMP/deploy_key"
+          known="$RUNNER_TEMP/deploy_known_hosts"
+          trap 'rm -f -- "$key" "$known"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$known"
+          printf -v remote 'bash %q %q %q' "$DEPLOY_PATH/release.sh" 'jobpilot' "$IMAGE"
+          ssh -T -i "$key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "$remote"

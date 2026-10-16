@@ -1,0 +1,35 @@
+name: Verify SSH
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify trusted server and deployment identity
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?missing host}" "${DEPLOY_PORT:?missing port}" "${DEPLOY_USER:?missing user}"
+          : "${DEPLOY_SSH_KEY:?missing key}" "${DEPLOY_KNOWN_HOSTS:?missing trusted host}"
+          umask 077
+          key="$RUNNER_TEMP/deploy_key"
+          known="$RUNNER_TEMP/deploy_known_hosts"
+          trap 'rm -f -- "$key" "$known"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$known"
+          actual="$(ssh -T -i "$key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+            -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'id -un')"
+          test "$actual" = "$DEPLOY_USER"
+          printf 'SSH_LOGIN_OK user=%s\n' "$actual"

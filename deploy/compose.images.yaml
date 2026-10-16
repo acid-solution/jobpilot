@@ -1,0 +1,15 @@
+# Apply after compose.yaml, compose.joint.yaml, and any HTTP testing override.
+# Compose >= 2.24.4 is required. Runtime configuration stays in .env.joint.
+services:
+  api:
+    build: !reset null
+    image: ${JOBPILOT_IMAGE:?Set a tested JobPilot image digest in .env.images}
+  studyflow:
+    build: !reset null
+    image: ${STUDYFLOW_IMAGE:?Set a tested StudyFlow image digest in .env.images}
+  auth:
+    build: !reset null
+    image: ${SHARED_AUTH_IMAGE:?Set a pinned authentication image digest in .env.images}
+  auth-keygen:
+    build: !reset null
+    image: ${SHARED_AUTH_IMAGE:?Set a pinned authentication image digest in .env.images}

@@ -64,3 +64,5 @@ if MYSQL_ROOT_PASSWORD=__GENERATE__ MYSQL_PASSWORD=unused bash /source/mysql-ent
 if POSTGRES_PASSWORD=__GENERATE__ bash /source/postgres-entrypoint.sh postgres 2>/dev/null; then exit 1; fi
 sh -n /source/auth-entrypoint.sh
 echo "PASS: deployment shell syntax"
+
+bash /source/test-release.sh

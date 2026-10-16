@@ -2,3 +2,5 @@
 .env
 .env.tmp
 model-pricing.json
+.release-state/
+.cd-http-test

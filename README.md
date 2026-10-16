@@ -31,6 +31,8 @@ JD 分析和报告生成可能需要等待后台任务完成。目录审核、�
 
 正式部署时，统一镜像包含 Go 服务和构建后的前端文件，页面与 API 都由 Go 提供；Caddy 负责 HTTPS 和认证转发。在 `deploy` 目录配置 `.env` 后执行 `docker compose up -d --build`，具体步骤见 [部署说明](deploy/README.md)。
 
+GitHub Actions 的检查、固定版本镜像和 SSH 发布配置见 [CI/CD 说明](deploy/CICD.md)。自动部署默认关闭，完成服务器初始化与首次联合部署验收后启用。
+
 本机也可以先在 `frontend` 运行 `npm run build`，再在 `backend` 将 `FRONTEND_DIST_DIR` 设置为 `../frontend/dist` 并启动后端，通过 `http://127.0.0.1:18081` 查看页面。共享账号登录还需要部署说明中的同源 Caddy 认证入口；直接访问 Go 端口不会转发 `/auth`。日常开发仍推荐 Vite，`FRONTEND_DIST_DIR` 留空即可。
 
 更多产品规则见 [需求文档](docs/REBUILD_PRD.md) 和 [页面流程](docs/REBUILD_FLOWS_AND_ACCEPTANCE.md)。

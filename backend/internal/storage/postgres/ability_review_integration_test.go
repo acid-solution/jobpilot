@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -38,6 +39,7 @@ func TestAbilityReviewApproveNewAndRejectsStaleLeaseIntegration(t *testing.T) {
 		_, _ = db.Exec(`DELETE FROM ability_review_requests WHERE id=$1`, requestID)
 		_, _ = db.Exec(`DELETE FROM abilities WHERE normalized_name=$1`, normalized)
 	})
+	attachReviewTestSource(t, db, requestID, name)
 	levels := []abilityreview.Level{{Level: 0, Description: "未学习"}, {Level: 1, Description: "了解概念"}, {Level: 2, Description: "能完成基础任务"}, {Level: 3, Description: "能独立开发"}, {Level: 4, Description: "能处理复杂场景"}, {Level: 5, Description: "能设计体系"}}
 	result := abilityreview.Result{Decision: "approve_new", Reason: "独立且可评估的框架", NewAbility: abilityreview.NewAbility{Name: name, CategoryCode: catalog[0].CategoryCode, Definition: "集成测试能力", Levels: levels}, Provider: "test", Model: "test", PromptVersion: abilityreview.PromptVersion}
 	input := abilityreview.Input{ID: requestID, LeaseToken: uuid.New(), Catalog: catalog}
@@ -75,6 +77,7 @@ func TestAbilityReviewClaimHasSingleEffectiveOwnerIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM ability_review_requests WHERE id=$1`, requestID) })
+	attachReviewTestSource(t, db, requestID, name)
 	type claimResult struct {
 		input abilityreview.Input
 		err   error
@@ -102,5 +105,31 @@ func TestAbilityReviewClaimHasSingleEffectiveOwnerIntegration(t *testing.T) {
 	}
 	if claimed != 1 || noJob != 1 {
 		t.Fatalf("claimed=%d no_job=%d", claimed, noJob)
+	}
+}
+
+func attachReviewTestSource(t *testing.T, db *sql.DB, requestID uuid.UUID, name string) {
+	t.Helper()
+	var user uuid.UUID
+	if err := db.QueryRow(`SELECT initiated_by_user_id FROM ability_review_requests WHERE id=$1`, requestID).Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	target, jd, requirement := uuid.New(), uuid.New(), uuid.New()
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM job_descriptions WHERE id=$1`, jd)
+		_, _ = db.Exec(`DELETE FROM job_targets WHERE id=$1`, target)
+	})
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO job_targets(id,user_id,title,employment_type)VALUES($1,$2,'审核集成测试','internship')`, []any{target, user}},
+		{`INSERT INTO job_descriptions(id,user_id,target_id,raw_text,raw_text_hash,status,validation_status)VALUES($1,$2,$3,$4,encode(digest($4,'sha256'),'hex'),'included','valid')`, []any{jd, user, target, name}},
+		{`INSERT INTO job_description_ability_requirements(id,job_description_id,operator,required_count,evidence,sort_order)VALUES($1,$2,'single',1,$3,1)`, []any{requirement, jd, name}},
+		{`INSERT INTO job_description_ability_requirement_options(requirement_id,raw_label,evidence,sort_order,review_request_id,resolution_status)VALUES($1,$2::text,$2::text,1,$3,'pending_review')`, []any{requirement, name, requestID}},
+	} {
+		if _, err := db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

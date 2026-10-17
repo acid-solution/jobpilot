@@ -39,7 +39,7 @@ export interface SaveTargetInput {
 }
 
 export interface JobDescription {
-	analysis?: { version: string; stages: Array<{ name: string; status: string; error_code?: string; attempts: number }>; warnings?: string[]; requirements?: Array<{ Operator: string; RequiredCount: number; RequirementKind: string; Evidence: string; Options: Array<{ RawLabel: string; Qualifier: string }> }>; classifications?: Array<{ category_code: string; specialty_code: string; relation: string; evidence: string; reason: string; candidate?: { specialty_name: string } }>; has_pending: boolean; next_poll_ms: number }
+	analysis?: { version: string; stages: Array<{ name: string; status: string; error_code?: string; attempts: number }>; warnings?: string[]; requirements?: Array<{ Operator: string; RequiredCount: number; RequirementKind: string; Evidence: string; Options: Array<{ RawLabel: string; Qualifier: string }> }>; classifications?: Array<{ category_code: string; specialty_code: string; relation: string; evidence: string; reason: string; candidate?: { specialty_name: string } }>; has_pending: boolean; next_poll_ms: number; needs_reanalysis?: boolean }
   id: string
   target_id: string
   title?: string

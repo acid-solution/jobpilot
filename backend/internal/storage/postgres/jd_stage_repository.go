@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilityidentity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 )
 
@@ -34,12 +35,29 @@ func (r *AnalysisRepository) LoadStage(ctx context.Context, job jdanalysis.Job, 
 	}
 	value.Result.VectorNormalized = value.Normalized
 	value.Result.AliasProposals = value.Aliases
+	// An explicit retry of an old result must not reuse the broken extraction
+	// (including its successful window checkpoints) under the new prompt.
+	if value.Result.PromptVersion != "" && value.Result.PromptVersion != jdanalysis.PromptVersion {
+		return jdanalysis.Result{}, false, nil
+	}
+	if stage == "extraction" || strings.HasPrefix(stage, "extraction_window_") {
+		for _, r := range value.Result.AbilityRequirements {
+			for _, o := range r.Options {
+				if !abilityidentity.IsAtomicLabel(o.RawLabel) {
+					return jdanalysis.Result{}, false, nil
+				}
+			}
+		}
+	}
 	if status == "failed" && (!retryable || attempts >= 3) {
 		return value.Result, false, jdanalysis.NewError(code, false, errors.New("JD stage requires manual retry: "+stage))
 	}
 	return value.Result, status == "succeeded", nil
 }
 func (r *AnalysisRepository) SaveStage(ctx context.Context, job jdanalysis.Job, stage, status string, result jdanalysis.Result, code string, retry ...bool) error {
+	if result.PromptVersion == "" {
+		result.PromptVersion = jdanalysis.PromptVersion
+	}
 	tx, err := r.database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -73,8 +91,9 @@ func (r *AnalysisRepository) SaveStage(ctx context.Context, job jdanalysis.Job, 
 	}
 	if stage == "extraction" && result.ValidationStatus != "" {
 		responsibilities, _ := json.Marshal(result.Responsibilities)
-		mentions, _ := json.Marshal(result.AbilityMentions)
-		_, err = tx.ExecContext(ctx, `UPDATE job_descriptions SET title=$3,company=$4,employment_type=$5,responsibilities=$6,ability_mentions=$7,conditions=$8,document_type=$9,validation_status=$10,validation_reason=$11,analysis_prompt_version=$12,updated_at=now() WHERE id=$1 AND user_id=$2`, job.JobDescriptionID, job.UserID, result.Title, result.Company, result.EmploymentType, responsibilities, mentions, strings.Join(result.Conditions, "；"), result.DocumentType, result.ValidationStatus, result.ValidationReason, jdanalysis.PromptVersion)
+		// Raw extraction is retained in the stage, never published as confirmed
+		// abilities. Keep the previous public result until normalization succeeds.
+		_, err = tx.ExecContext(ctx, `UPDATE job_descriptions SET title=$3,company=$4,employment_type=$5,responsibilities=$6,conditions=$7,document_type=$8,validation_status=$9,validation_reason=$10,analysis_prompt_version=$11,updated_at=now() WHERE id=$1 AND user_id=$2`, job.JobDescriptionID, job.UserID, result.Title, result.Company, result.EmploymentType, responsibilities, strings.Join(result.Conditions, "；"), result.DocumentType, result.ValidationStatus, result.ValidationReason, jdanalysis.PromptVersion)
 		if err != nil {
 			return err
 		}

@@ -555,3 +555,32 @@ test('a failed classification keeps extracted content visible and offers a stage
     assert.match(await detail.innerText(), /内容提取：已完成/)
   } finally { await context.close() }
 })
+
+test('an old successful JD can be reanalyzed without losing its previous confirmed abilities', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    let retried = 0
+    const old = { ...completed, analysis: { ...completed.analysis, needs_reanalysis: true, stages: [] } }
+    await page.route('**/api/v1/**', route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/v1/jds/jd/retry') {
+        retried++
+        return respond(route, { ...old, job_status: 'queued', analysis: { ...old.analysis, needs_reanalysis: false, has_pending: true } })
+      }
+      if (path === '/api/v1/jds') return respond(route, [old])
+      if (path === '/api/v1/jd-imports') return respond(route, [])
+      if (path === '/api/v1/market-profile') return respond(route, profile(true))
+      throw new Error(`Unexpected API ${path}`)
+    })
+    await page.goto(baseURL)
+    await page.locator('.jd-row').click()
+    const detail = page.getByRole('dialog')
+    await detail.getByText('这份 JD 使用旧版能力提取规则', { exact: true }).waitFor()
+    await detail.getByRole('button', { name: '按新规则重新分析', exact: true }).click()
+    await detail.getByRole('button', { name: '重新检查状态', exact: true }).waitFor()
+    assert.equal(retried, 1)
+    assert.match(await detail.innerText(), /MySQL/)
+    assert.equal(await detail.getByRole('button', { name: '按新规则重新分析' }).count(), 0)
+  } finally { await context.close() }
+})

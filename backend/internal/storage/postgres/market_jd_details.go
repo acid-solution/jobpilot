@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/google/uuid"
 )
@@ -26,7 +27,7 @@ func (r *MarketRepository) loadJDDetails(ctx context.Context, items []market.Job
 		byID[jd.ID] = jd
 		jd.AbilityGrading.Status = "not_started"
 		jd.AbilityLevels = []market.JDAbilityLevel{}
-		jd.Analysis = market.AnalysisState{Version: sourceHash(jd.RawText), Stages: []market.AnalysisStage{}, NextPollMS: 2000, Warnings: []string{}}
+		jd.Analysis = market.AnalysisState{Version: sourceHash(jd.RawText), Stages: []market.AnalysisStage{}, NextPollMS: 2000, Warnings: []string{}, NeedsReanalysis: jd.JobStatus == "succeeded" && jd.ValidationStatus == "valid" && jd.AnalysisPromptVersion != jdanalysis.PromptVersion}
 	}
 	read := func(query string, scan func(*sql.Rows) error, extra ...any) error {
 		args := append([]any{uuidArray(ids)}, extra...)

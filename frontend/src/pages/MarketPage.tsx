@@ -184,8 +184,8 @@ function mapJD(item: JobDescription): JDSample {
 		  : waitingForClassification
 		    ? '基础信息已经解析，等待岗位分类和能力归一化。'
 		    : '等待系统补充判断依据。'),
-    abilities: item.ability_mentions?.map((mention) => mention.name) ?? [],
-    abilityEvidence: item.ability_mentions ?? [],
+    abilities: [...new Set(item.ability_mentions?.map((mention) => mention.name) ?? [])],
+    abilityEvidence: (item.ability_mentions ?? []).filter((mention, index, all) => all.findIndex(other => other.name === mention.name && other.evidence === mention.evidence) === index),
 		abilityLevels: item.ability_levels ?? [],
     responsibilities: item.responsibilities ?? [],
     analysisModel: item.analysis_model,
@@ -307,7 +307,7 @@ export function MarketPage() {
     setError('')
     try {
       const current = allSamples.find(sample => sample.id === id)
-      if (current && !current.analysis?.stages.length) {
+      if (current && !current.analysis?.stages.length && !current.analysis?.needs_reanalysis) {
         const session = await jobPilotAPI.startJDImport(current.rawText, id)
         importFeedback.submitted(session)
         await loadJDs(false)
@@ -579,6 +579,7 @@ export function MarketPage() {
                 </section>
                 <section>
                   <h3>提取的能力</h3>
+				  {selectedJD.analysis?.needs_reanalysis && <div className="detail-status-card"><AlertCircle size={17} /><div><strong>这份 JD 使用旧版能力提取规则</strong><p>可按新规则重新拆分和归一化。此操作会调用你的模型；上次已确认的能力会保留到新结果完成。</p><button className="button retry-button" type="button" onClick={() => void retryJD(selectedJD.id)}><RotateCcw size={15} />按新规则重新分析</button></div></div>}
                   {selectedJD.abilities.length > 0 ? <div className="ability-tags">{selectedJD.abilities.map((ability) => <span key={ability}>{ability}</span>)}</div> : <p className="detail-muted">处理完成后显示。</p>}
 				  {selectedJD.abilityLevels?.length ? <div className="jd-ability-level-list">{selectedJD.abilityLevels.map((item) => <article key={`${item.ability_id}-${item.requirement_kind}`}>
 					<header><strong>{item.name}</strong><span>L{item.level} · {levelSourceLabel(item.source)} · {requirementKindLabel(item.requirement_kind)}</span></header>

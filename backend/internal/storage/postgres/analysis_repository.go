@@ -81,7 +81,8 @@ func (r *AnalysisRepository) Catalog(ctx context.Context) (jdanalysis.Catalog, e
 	}
 
 	abilityRows, err := r.database.QueryContext(ctx, `
-		SELECT ability.code, ability.name, category.code, category.name, ability.aliases, COALESCE(ability.definition,'')
+		SELECT ability.code, ability.name, category.code, category.name, ability.aliases, COALESCE(ability.definition,''),
+		 jsonb_build_object('include_signals',ability.include_signals,'exclude_signals',ability.exclude_signals,'confused_with',ability.confused_with)
 		FROM abilities ability JOIN ability_categories category ON category.id=ability.category_id
 		WHERE ability.is_active ORDER BY category.sort_order, ability.sort_order`)
 	if err != nil {
@@ -91,12 +92,15 @@ func (r *AnalysisRepository) Catalog(ctx context.Context) (jdanalysis.Catalog, e
 	abilities := make([]jdanalysis.AbilityOption, 0)
 	for abilityRows.Next() {
 		var ability jdanalysis.AbilityOption
-		var aliases []byte
-		if err := abilityRows.Scan(&ability.Code, &ability.Name, &ability.CategoryCode, &ability.CategoryName, &aliases, &ability.Definition); err != nil {
+		var aliases, boundaries []byte
+		if err := abilityRows.Scan(&ability.Code, &ability.Name, &ability.CategoryCode, &ability.CategoryName, &aliases, &ability.Definition, &boundaries); err != nil {
 			return jdanalysis.Catalog{}, fmt.Errorf("scan ability catalog: %w", err)
 		}
 		if err := json.Unmarshal(aliases, &ability.Aliases); err != nil {
 			return jdanalysis.Catalog{}, fmt.Errorf("decode ability aliases: %w", err)
+		}
+		if err := json.Unmarshal(boundaries, &ability); err != nil {
+			return jdanalysis.Catalog{}, err
 		}
 		abilities = append(abilities, ability)
 	}
@@ -562,16 +566,20 @@ func saveJDAbilities(ctx context.Context, transaction *sql.Tx, job jdanalysis.Jo
 		}
 		for optionIndex, option := range requirement.Options {
 			metadata, _ := json.Marshal(option.Candidate)
+			details, _ := json.Marshal(option.ScopeDetails)
+			if option.ScopeDetails == nil {
+				details = []byte("[]")
+			}
 			var optionID uuid.UUID
 			if err := transaction.QueryRowContext(ctx, `
 				INSERT INTO job_description_ability_requirement_options (
 					requirement_id, ability_id, raw_label, qualifier, evidence, required_level, sort_order,
-					resolution_status, candidate_metadata, normalization_reason
+					resolution_status, candidate_metadata, normalization_reason,normalization_relation,scope_details
 				) VALUES (
 					$1, (SELECT id FROM abilities WHERE code = NULLIF($2, '') AND is_active),
-					$3, $4, $5, $6, $7, CASE WHEN $2='' THEN 'pending_review' ELSE 'resolved' END, $8, $9
+					$3, $4, $5, $6, $7, CASE WHEN $2='' THEN 'pending_review' ELSE 'resolved' END, $8, $9,$10,$11
 				) RETURNING id`, requirementID, option.CatalogCode, option.RawLabel, option.Qualifier,
-				option.Evidence, option.RequiredLevel, optionIndex+1, metadata, option.NormalizationReason).Scan(&optionID); err != nil {
+				option.Evidence, option.RequiredLevel, optionIndex+1, metadata, option.NormalizationReason, option.NormalizationRelation, details).Scan(&optionID); err != nil {
 				return fmt.Errorf("save JD ability requirement option: %w", err)
 			}
 			if option.CatalogCode == "" {

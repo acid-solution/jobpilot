@@ -77,6 +77,7 @@ type AnalysisState struct {
 	Requirements    []jdanalysis.AbilityRequirement `json:"requirements"`
 	HasPending      bool                            `json:"has_pending"`
 	NextPollMS      int                             `json:"next_poll_ms"`
+	NeedsReanalysis bool                            `json:"needs_reanalysis,omitempty"`
 }
 
 type AbilityReviewSummary struct {

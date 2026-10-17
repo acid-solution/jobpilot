@@ -31,6 +31,11 @@ func textAbilityCandidates(label string, abilities []AbilityOption, limit int) [
 				}
 			}
 		}
+		for _, signal := range ability.IncludeSignals {
+			if needle != "" && strings.Contains(normalizedLabel(signal), needle) {
+				score = max(score, 8)
+			}
+		}
 		if score > 0 {
 			values = append(values, scored{ability, score})
 		}
@@ -42,7 +47,25 @@ func textAbilityCandidates(label string, abilities []AbilityOption, limit int) [
 	out := []AbilityMatch{}
 	for _, item := range values {
 		a := item.ability
-		out = append(out, AbilityMatch{Code: a.Code, Name: a.Name, CategoryCode: a.CategoryCode, Aliases: a.Aliases, Definition: a.Definition})
+		out = append(out, abilityMatch(a))
 	}
 	return out
+}
+
+func contextAbilityCandidates(evidence string, abilities []AbilityOption, limit int) []AbilityMatch {
+	quote := normalizedLabel(evidence)
+	values := []AbilityMatch{}
+	for _, a := range abilities {
+		for _, name := range append([]string{a.Name}, a.Aliases...) {
+			key := normalizedLabel(name)
+			if len([]rune(key)) >= 3 && strings.Contains(quote, key) {
+				values = append(values, abilityMatch(a))
+				break
+			}
+		}
+		if len(values) >= limit {
+			break
+		}
+	}
+	return values
 }

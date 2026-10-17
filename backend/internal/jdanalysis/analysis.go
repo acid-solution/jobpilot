@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "jd-source-stages-v15"
-const NormalizationPromptVersion = "jd-vector-candidates-v12"
+const PromptVersion = "jd-source-stages-v16"
+const NormalizationPromptVersion = "jd-vector-candidates-v13"
 const ClassificationReviewPromptVersion = "job-classification-review-v1"
 
 var (
@@ -57,14 +57,22 @@ const (
 )
 
 type AbilityRequirementOption struct {
-	RawLabel            string
-	AbilityName         string
-	CatalogCode         string
-	Qualifier           string
-	Evidence            string
-	RequiredLevel       *int
-	Candidate           *AbilityCandidate
-	NormalizationReason string
+	RawLabel              string
+	AbilityName           string
+	CatalogCode           string
+	Qualifier             string
+	Evidence              string
+	RequiredLevel         *int
+	Candidate             *AbilityCandidate
+	NormalizationReason   string
+	NormalizationRelation string
+	ScopeDetails          []AbilityScopeDetail
+}
+
+type AbilityScopeDetail struct {
+	Label     string `json:"label"`
+	Qualifier string `json:"qualifier"`
+	Evidence  string `json:"evidence"`
 }
 
 type AbilityCandidate struct {
@@ -105,20 +113,31 @@ type JobCategoryOption struct {
 }
 
 type AbilityOption struct {
-	Code         string   `json:"code"`
-	Name         string   `json:"name"`
-	CategoryCode string   `json:"category_code,omitempty"`
-	CategoryName string   `json:"category_name,omitempty"`
-	Aliases      []string `json:"aliases"`
-	Definition   string   `json:"definition,omitempty"`
+	Code           string             `json:"code"`
+	Name           string             `json:"name"`
+	CategoryCode   string             `json:"category_code,omitempty"`
+	CategoryName   string             `json:"category_name,omitempty"`
+	Aliases        []string           `json:"aliases"`
+	Definition     string             `json:"definition,omitempty"`
+	IncludeSignals []string           `json:"include_signals,omitempty"`
+	ExcludeSignals []string           `json:"exclude_signals,omitempty"`
+	ConfusedWith   []AbilityConfusion `json:"confused_with,omitempty"`
+}
+
+type AbilityConfusion struct {
+	AbilityCode string `json:"ability_code"`
+	Distinction string `json:"distinction"`
 }
 
 type AbilityMatch struct {
-	Code         string   `json:"code"`
-	Name         string   `json:"name"`
-	CategoryCode string   `json:"category_code"`
-	Aliases      []string `json:"aliases"`
-	Definition   string   `json:"definition"`
+	Code           string             `json:"code"`
+	Name           string             `json:"name"`
+	CategoryCode   string             `json:"category_code"`
+	Aliases        []string           `json:"aliases"`
+	Definition     string             `json:"definition"`
+	IncludeSignals []string           `json:"include_signals,omitempty"`
+	ExcludeSignals []string           `json:"exclude_signals,omitempty"`
+	ConfusedWith   []AbilityConfusion `json:"confused_with,omitempty"`
 }
 
 type Catalog struct {

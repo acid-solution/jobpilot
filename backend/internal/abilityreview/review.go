@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const PromptVersion = "ability-review-v2"
+const PromptVersion = "ability-review-v3"
 const AliasPromptVersion = "ability-alias-review-v1"
 
 var (
@@ -21,14 +21,21 @@ var (
 )
 
 type CatalogAbility struct {
-	Code         string   `json:"code"`
-	Name         string   `json:"name"`
-	CategoryCode string   `json:"category_code"`
-	CategoryName string   `json:"category_name"`
-	Aliases      []string `json:"aliases"`
-	Definition   string   `json:"definition,omitempty"`
-	Level2       string   `json:"level_2,omitempty"`
-	Level3       string   `json:"level_3,omitempty"`
+	Code           string           `json:"code"`
+	Name           string           `json:"name"`
+	CategoryCode   string           `json:"category_code"`
+	CategoryName   string           `json:"category_name"`
+	Aliases        []string         `json:"aliases"`
+	Definition     string           `json:"definition,omitempty"`
+	Level2         string           `json:"level_2,omitempty"`
+	Level3         string           `json:"level_3,omitempty"`
+	IncludeSignals []string         `json:"include_signals,omitempty"`
+	ExcludeSignals []string         `json:"exclude_signals,omitempty"`
+	ConfusedWith   []ScopeConfusion `json:"confused_with,omitempty"`
+}
+type ScopeConfusion struct {
+	AbilityCode string `json:"ability_code"`
+	Distinction string `json:"distinction"`
 }
 
 type Input struct {
@@ -75,7 +82,8 @@ type Result struct {
 	ProviderRequestID   string
 	InputTokens         int
 	OutputTokens        int
-	ContextIndependent  bool `json:"context_independent"`
+	ContextIndependent  bool   `json:"context_independent"`
+	Relation            string `json:"relation,omitempty"`
 }
 
 type Reviewer interface {

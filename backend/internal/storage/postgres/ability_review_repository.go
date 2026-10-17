@@ -67,6 +67,7 @@ func (r *AbilityReviewRepository) Claim(ctx context.Context, lease time.Duration
 	err := r.database.QueryRowContext(ctx, `WITH candidate AS (
 		SELECT id FROM ability_review_requests
 		WHERE status IN ('queued','failed') AND attempts < max_attempts AND next_attempt_at <= NOW()
+		AND (review_type='alias' OR EXISTS(SELECT 1 FROM job_description_ability_requirement_options o WHERE o.review_request_id=ability_review_requests.id AND o.ability_id IS NULL))
 		ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
 	) UPDATE ability_review_requests request
 	SET status='running', attempts=request.attempts+1, lease_token=$1, heartbeat_at=NOW(),
@@ -122,7 +123,8 @@ func (r *AbilityReviewRepository) loadEvidence(ctx context.Context, requestID uu
 func (r *AbilityReviewRepository) loadAbilityCatalog(ctx context.Context) ([]abilityreview.CatalogAbility, error) {
 	rows, err := r.database.QueryContext(ctx, `SELECT ability.code, ability.name, category.code, category.name,
 		ability.aliases, COALESCE(ability.definition,''),
-		COALESCE(l2.description,''), COALESCE(l3.description,'')
+		COALESCE(l2.description,''), COALESCE(l3.description,''),
+		jsonb_build_object('include_signals',ability.include_signals,'exclude_signals',ability.exclude_signals,'confused_with',ability.confused_with)
 		FROM abilities ability JOIN ability_categories category ON category.id=ability.category_id
 		LEFT JOIN ability_levels l2 ON l2.ability_id=ability.id AND l2.level=2
 		LEFT JOIN ability_levels l3 ON l3.ability_id=ability.id AND l3.level=3
@@ -134,11 +136,14 @@ func (r *AbilityReviewRepository) loadAbilityCatalog(ctx context.Context) ([]abi
 	result := []abilityreview.CatalogAbility{}
 	for rows.Next() {
 		var item abilityreview.CatalogAbility
-		var aliases []byte
-		if err := rows.Scan(&item.Code, &item.Name, &item.CategoryCode, &item.CategoryName, &aliases, &item.Definition, &item.Level2, &item.Level3); err != nil {
+		var aliases, boundaries []byte
+		if err := rows.Scan(&item.Code, &item.Name, &item.CategoryCode, &item.CategoryName, &aliases, &item.Definition, &item.Level2, &item.Level3, &boundaries); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(aliases, &item.Aliases)
+		if err := json.Unmarshal(boundaries, &item); err != nil {
+			return nil, err
+		}
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -238,6 +243,11 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 	if !leaseValid {
 		return abilityreview.ErrLeaseLost
 	}
+	// A replacement analysis may have removed every option while this call was
+	// in flight. Its former reviewer must not create an orphan catalog entry.
+	if len(affectedJDs) == 0 {
+		return abilityreview.ErrLeaseLost
+	}
 	var abilityID uuid.UUID
 	switch result.Decision {
 	case "reuse_existing":
@@ -293,7 +303,7 @@ func (r *AbilityReviewRepository) Complete(ctx context.Context, input abilityrev
 		if err != nil {
 			return err
 		}
-		if result.Decision == "reuse_existing" {
+		if result.Decision == "reuse_existing" && result.Relation != "within_scope" {
 			if err := enqueueAliasesForResolvedReview(ctx, tx, input.ID, abilityID, result.Reason); err != nil {
 				return err
 			}
@@ -421,7 +431,7 @@ func validateReviewResult(result abilityreview.Result, catalog []abilityreview.C
 	case "reject":
 		return nil
 	case "approve_new":
-		if strings.TrimSpace(result.NewAbility.Name) == "" || len([]rune(result.NewAbility.Name)) > 150 || strings.TrimSpace(result.NewAbility.Definition) == "" || len([]rune(result.NewAbility.Definition)) > 1000 {
+		if !abilityidentity.IsAtomicLabel(result.NewAbility.Name) || strings.TrimSpace(result.NewAbility.Definition) == "" || len([]rune(result.NewAbility.Definition)) > 1000 {
 			return errors.New("incomplete ability")
 		}
 		if len(result.NewAbility.Aliases) > 20 {
@@ -523,7 +533,18 @@ func syncJDAbilityMentions(ctx context.Context, tx *sql.Tx, jdIDs ...uuid.UUID) 
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE job_descriptions jd SET ability_mentions=COALESCE((SELECT jsonb_agg(jsonb_build_object('name',COALESCE(ability.name,option.raw_label),'catalog_code',COALESCE(ability.code,''),'qualifier',option.qualifier,'evidence',option.evidence,'required_level',option.required_level) ORDER BY requirement.sort_order,option.sort_order) FROM job_description_ability_requirements requirement JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id LEFT JOIN abilities ability ON ability.id=option.ability_id WHERE requirement.job_description_id=jd.id),'[]'::jsonb),updated_at=now() WHERE jd.id IN(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value)`, ids)
+	_, err = tx.ExecContext(ctx, `UPDATE job_descriptions jd SET ability_mentions=COALESCE((
+		SELECT jsonb_agg(confirmed.value ORDER BY confirmed.requirement_order,confirmed.option_order) FROM (
+			SELECT DISTINCT ON(ability.id,option.evidence)
+				jsonb_build_object('name',ability.name,'catalog_code',ability.code,'qualifier',option.qualifier,'evidence',option.evidence,'required_level',option.required_level) value,
+				requirement.sort_order requirement_order,option.sort_order option_order
+			FROM job_description_ability_requirements requirement
+			JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id
+			JOIN abilities ability ON ability.id=option.ability_id AND ability.is_active
+			WHERE requirement.job_description_id=jd.id AND option.resolution_status='resolved'
+			ORDER BY ability.id,option.evidence,option.required_level DESC NULLS LAST,requirement.sort_order,option.sort_order
+		) confirmed),'[]'::jsonb),updated_at=now()
+		WHERE jd.id IN(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb) value)`, ids)
 	return err
 }
 func rebuildResolvedMentions(ctx context.Context, tx *sql.Tx, requestID uuid.UUID) error {

@@ -64,6 +64,12 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm test
+      - name: Install browser for market acceptance tests
+        run: npx playwright install --with-deps chromium
+      - name: Verify market refresh and candidate selection in a headless browser
+        run: npm run test:e2e
+        env:
+          RUN_MARKET_E2E: '1'
       - run: npm run typecheck
       - run: npm run build
 

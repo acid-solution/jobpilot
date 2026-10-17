@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -73,6 +74,78 @@ func TestJDImportSelectionIsolationAndIdempotency(t *testing.T) {
 type stagedIntegrationAnalyzer struct {
 	extractions, classifications int
 	class                        jdanalysis.JobClassification
+}
+
+func TestJDImportReopensDeletedAndUnselectedCandidates(t *testing.T) {
+	db := agentTransactionDatabase(t)
+	ctx := t.Context()
+	user, target := uuid.New(), uuid.New()
+	if _, err := db.ExecContext(ctx, `INSERT INTO job_targets(id,user_id,title,employment_type,directions,catalog_status) VALUES($1,$2,'重复导入','internship','[]','valid')`, target, user); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewJDImportRepository(db)
+	for _, count := range []int{1, 2} {
+		raw := fmt.Sprintf("重新粘贴材料 %d", count)
+		session, err := repo.Create(ctx, user, target, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		job, err := repo.Claim(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidates := make([]jdimport.Candidate, count)
+		for i := range candidates {
+			candidates[i] = jdimport.Candidate{Title: fmt.Sprintf("岗位%d", i), RawText: fmt.Sprintf("材料%d岗位%d负责接口开发。", count, i)}
+		}
+		if err = repo.Complete(ctx, job, candidates); err != nil {
+			t.Fatal(err)
+		}
+		first, err := repo.Confirm(ctx, user, session.ID, []uuid.UUID{candidates[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := *first.Candidates[0].JDID
+		if count == 2 {
+			reopened, err := repo.Create(ctx, user, target, raw, nil)
+			if err != nil || reopened.Status != "ready" || reopened.Candidates[0].JDID == nil || reopened.Candidates[1].JDID != nil {
+				t.Fatalf("unselected candidate unavailable: %#v %v", reopened, err)
+			}
+			if _, err = repo.Confirm(ctx, user, session.ID, []uuid.UUID{candidates[1].ID}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err = db.ExecContext(ctx, `DELETE FROM job_descriptions WHERE id=$1 AND user_id=$2`, original, user); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := repo.Create(ctx, user, target, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reopened.ID != session.ID {
+			t.Fatal("recognition checkpoint was discarded")
+		}
+		if count == 2 {
+			if reopened.Status != "ready" || reopened.Candidates[0].JDID != nil || reopened.Candidates[1].JDID == nil {
+				t.Fatalf("deleted candidate not selectable: %#v", reopened)
+			}
+			reopened, err = repo.Confirm(ctx, user, session.ID, []uuid.UUID{candidates[0].ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if reopened.Status != "confirmed" || reopened.Candidates[0].JDID == nil || *reopened.Candidates[0].JDID == original {
+			t.Fatalf("deleted JD not re-created: %#v", reopened)
+		}
+		repeat, err := repo.Create(ctx, user, target, raw, nil)
+		if err != nil || *repeat.Candidates[0].JDID != *reopened.Candidates[0].JDID {
+			t.Fatalf("replay created another JD: %#v %v", repeat, err)
+		}
+		var total int
+		if err = db.QueryRowContext(ctx, `SELECT count(*) FROM job_descriptions WHERE user_id=$1 AND raw_text LIKE $2`, user, fmt.Sprintf("材料%d%%", count)).Scan(&total); err != nil || total != count {
+			t.Fatalf("formal count=%d want=%d err=%v", total, count, err)
+		}
+	}
 }
 
 func (a *stagedIntegrationAnalyzer) AnalyzeJD(context.Context, string, string, string, jdanalysis.Catalog) (jdanalysis.Result, error) {

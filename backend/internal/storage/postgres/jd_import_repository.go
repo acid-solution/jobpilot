@@ -37,6 +37,59 @@ func (r *JDImportRepository) Create(ctx context.Context, user, target uuid.UUID,
 	if err != nil {
 		return jdimport.Session{}, fmt.Errorf("create JD import: %w", err)
 	}
+	session, err := r.Get(ctx, user, id)
+	if err != nil || (session.Status != "confirmed" && session.Status != "ready") || session.ReplacementID != nil {
+		return session, err
+	}
+	if len(session.Candidates) == 1 {
+		// Reuse recognition, but a deleted or edited formal JD is no longer a duplicate.
+		return r.Confirm(ctx, user, id, []uuid.UUID{session.Candidates[0].ID})
+	}
+	return r.reopenSelection(ctx, user, id)
+}
+
+// Re-pasting a multi-job material lets the user select remaining/deleted candidates
+// again. Never re-import them automatically during deletion or worker recovery.
+func (r *JDImportRepository) reopenSelection(ctx context.Context, user, id uuid.UUID) (jdimport.Session, error) {
+	tx, err := r.database.BeginTx(ctx, nil)
+	if err != nil {
+		return jdimport.Session{}, err
+	}
+	defer tx.Rollback()
+	if err = lockUserMutationTx(ctx, tx.Tx, user); err != nil {
+		return jdimport.Session{}, err
+	}
+	session, err := scanImport(tx.QueryRowContext(ctx, `SELECT `+importColumns+` FROM jd_imports WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user))
+	if err != nil {
+		return session, err
+	}
+	available := false
+	for i := range session.Candidates {
+		candidate := &session.Candidates[i]
+		if candidate.JDID != nil {
+			var exists bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM job_descriptions WHERE id=$1 AND user_id=$2 AND target_id=$3 AND raw_text_hash=$4)`, *candidate.JDID, user, session.TargetID, sourceHash(candidate.RawText)).Scan(&exists); err != nil {
+				return session, err
+			}
+			if !exists {
+				candidate.JDID = nil
+				candidate.Duplicate = false
+			}
+		}
+		available = available || candidate.JDID == nil
+	}
+	if available && (session.Status == "confirmed" || session.Status == "ready") {
+		data, err := json.Marshal(session.Candidates)
+		if err != nil {
+			return session, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE jd_imports SET status='ready',candidates=$3,updated_at=now() WHERE id=$1 AND user_id=$2`, id, user, data); err != nil {
+			return session, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return session, err
+	}
 	return r.Get(ctx, user, id)
 }
 
@@ -262,8 +315,19 @@ func (r *JDImportRepository) Confirm(ctx context.Context, user, id uuid.UUID, id
 	}
 	for i := range s.Candidates {
 		c := &s.Candidates[i]
-		if !wanted[c.ID] || c.JDID != nil {
+		if !wanted[c.ID] {
 			continue
+		}
+		if c.JDID != nil {
+			var exists bool
+			if e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM job_descriptions WHERE id=$1 AND user_id=$2 AND target_id=$3 AND raw_text_hash=$4)`, *c.JDID, user, s.TargetID, sourceHash(c.RawText)).Scan(&exists); e != nil {
+				return s, e
+			}
+			if exists {
+				continue
+			}
+			c.JDID = nil
+			c.Duplicate = false
 		}
 		var existing uuid.UUID
 		e = tx.QueryRowContext(ctx, `SELECT id FROM job_descriptions WHERE user_id=$1 AND target_id=$2 AND raw_text_hash=$3`, user, s.TargetID, sourceHash(c.RawText)).Scan(&existing)

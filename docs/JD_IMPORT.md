@@ -6,7 +6,7 @@
 
 模型先判断是否存在招聘职责或应聘要求。小说、简历、技术文章、新闻和随机文字即使包含技术词，也不能据此生成 JD。没有有效岗位时，导入状态为 `empty`，页面显示“未识别到有效 JD”，不会创建正式 JD。缺标题、公司等字段可以继续提取；只有要求、没有职责的文本可以提取能力，但会保留明确的分类错误。
 
-单候选直接导入；多个候选默认不选，由用户查看名称、公司和原文后确认。修改已有记录也先识别；多个候选只能选一份更新原 ID。原始材料和未选候选继续保留，可以通过导入会话查询，其他候选可以作为新材料另行导入。
+单候选直接导入；多个候选默认不选，由用户查看名称、公司和原文后确认。修改已有记录也先识别；多个候选只能选一份更新原 ID。原始材料和未选候选继续保留，可以通过导入会话查询。再次粘贴相同的多岗位材料时，仍未导入或对应记录已删除的候选可以重新选择；有效的已有记录不会重复创建。删除后重新提交单岗位材料会复用识别结果，重新创建正式 JD；删除本身不会触发自动重新导入。
 
 ## 接口
 
@@ -37,3 +37,7 @@ JD 响应的 `analysis` 包含阶段状态、错误、次数、原始技术要�
 ## 验证
 
 固定语料与可选真实模型测试位于 `backend/internal/storage/postgres/jd_corpus_live_test.go`。正常测试不发送外部请求；设置 `RUN_JD_CORPUS_LIVE=1` 才运行 50 段基础阶段评测，`RUN_JD_PIPELINE_LIVE=1` 复用其中样本执行实际 Worker、审核和判级。均应指向隔离 PostgreSQL，并通过本机忽略的 `.env.local` 或后续凭据提供器读取模型配置。结果见[评测记录](JD_PARSING_EVALUATION.md)。
+
+前端常规无头自动化使用 Playwright：设置 `RUN_MARKET_E2E=1` 后执行 `npm run test:e2e`，覆盖默认选择、非 JD、异步完成、过期响应和失败阶段重试。可用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定本机 Chrome/Edge，未指定时使用已安装的浏览器或 Playwright Chromium；CI 会安装 Chromium 后执行。测试通过本地假接口模拟 Worker 的状态变化，不调用 Computer Use 或模型服务。
+
+线上验收脚本为 `frontend/scripts/verify-market-live.mjs`。显式设置 `RUN_MARKET_LIVE=1`、`JOBPILOT_BASE_URL`、`JOBPILOT_TEST_ACCOUNT_FILE`、`JOBPILOT_TEST_CORPUS_FILE` 后执行；账号必须是独立的 `example.test` 普通测试账号，语料使用已授权的固定评测文件。脚本实际操作线上页面，核对默认不选、多候选确认、后台完成后详情/画像/能力自动更新。默认保留数据；仅设置 `RESET_MARKET_SYNTHETIC_FIXTURE=1` 时重置该账号已创建且严格匹配的蓝鲸科技合成 JD，以复用同一份材料重新验证处理。凭据文件必须保存在仓库外，脚本不输出密码或令牌。

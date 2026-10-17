@@ -25,9 +25,11 @@ test('multiple jobs require an explicit selection with no default choices', () =
   assert.doesNotMatch(html, /checked=""/)
   assert.match(html, /disabled=""[^>]*>确认导入 0 份/)
 })
-test('empty imports have no permanent result panel or failure retry action', () => {
-  const html = renderToStaticMarkup(createElement(Panel, { session: { ...session, status: 'empty', candidates: [] }, ...props }))
-  assert.equal(html, '')
+test('processing and empty imports have no permanent result panels', () => {
+  for (const status of ['queued', 'running', 'empty', 'confirmed']) {
+    const html = renderToStaticMarkup(createElement(Panel, { session: { ...session, status, candidates: [] }, ...props }))
+    assert.equal(html, '')
+  }
 })
 test('replacement selection uses one radio choice and preserves original identity', () => {
   const html = renderToStaticMarkup(createElement(Panel, { session: { ...session, replacement_jd_id: 'old' }, ...props }))

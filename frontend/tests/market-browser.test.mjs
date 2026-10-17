@@ -424,8 +424,11 @@ test('async empty results clear processing notices and explicit resubmissions op
     await page.getByRole('button', { name: '添加 JD', exact: true }).click()
     await page.getByLabel('招聘材料', { exact: true }).fill(raw)
     await page.getByRole('button', { name: '保存并识别岗位' }).click()
-    await page.getByRole('heading', { name: '正在识别岗位内容' }).waitFor()
-    assert.match(await page.locator('.market-notice').innerText(), /正在识别岗位/)
+    const progress = page.getByRole('dialog', { name: '正在识别岗位内容' })
+    await progress.waitFor()
+    assert.match(await progress.innerText(), /0 份排队中 · 1 份正在识别/)
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
+    assert.equal(await page.locator('.market-notice').count(), 0)
     finish = true
     const modal = page.getByRole('alertdialog', { name: '未识别到有效 JD' })
     await modal.waitFor()
@@ -444,6 +447,83 @@ test('async empty results clear processing notices and explicit resubmissions op
     await page.locator('.market-empty').waitFor()
     assert.equal(await modal.count(), 0)
     assert.equal(await page.locator('.jd-import-panel').count(), 0)
+  } finally { await context.close() }
+})
+
+test('progress is dismissible and reopenable; queue transitions and refresh do not reopen it, completion closes it', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    let imports = [
+      { ...session, status: 'queued', candidates: [], has_pending: true, next_poll_ms: 2000 },
+      { ...session, id: 'second-material', status: 'running', candidates: [], has_pending: true, next_poll_ms: 2000 },
+    ]
+    await page.route('**/api/v1/**', route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/v1/jds') return respond(route, [])
+      if (path === '/api/v1/jd-imports') return respond(route, imports)
+      if (path === '/api/v1/market-profile') return respond(route, profile(false))
+      throw new Error(`Unexpected API ${path}`)
+    })
+    await page.goto(baseURL)
+    const modal = page.getByRole('dialog', { name: '正在识别岗位内容' })
+    await modal.waitFor()
+    assert.match(await modal.innerText(), /1 份排队中 · 1 份正在识别/)
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
+    await modal.getByRole('button', { name: '后台继续' }).click()
+    await modal.waitFor({ state: 'detached' })
+    imports = imports.map(item => ({ ...item, status: 'running' }))
+    // Let the real poll observe queued -> running after the reminder is dismissed.
+    const response = await page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/jd-imports')
+    await response.finished()
+    await page.reload()
+    const reopen = page.getByRole('button', { name: '查看识别进度（2）', exact: true })
+    await reopen.waitFor()
+    assert.equal(await modal.count(), 0)
+    await reopen.click()
+    await modal.waitFor()
+    assert.match(await modal.innerText(), /0 份排队中 · 2 份正在识别/)
+    imports = [session]
+    await page.getByRole('heading', { name: '识别到 2 个岗位，请选择' }).waitFor()
+    await modal.waitFor({ state: 'detached' })
+    assert.equal(await page.getByRole('button', { name: /查看识别进度/ }).count(), 0)
+    assert.equal(await page.getByRole('checkbox', { checked: true }).count(), 0)
+    await page.getByRole('checkbox').first().check()
+    assert.equal(await page.getByRole('button', { name: '确认导入 1 份' }).isEnabled(), true)
+  } finally { await context.close() }
+})
+
+test('recognition failure closes progress and a retry opens progress for the same import', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    let imports = [{ ...session, status: 'running', candidates: [], has_pending: true, next_poll_ms: 2000 }], retried = 0
+    await page.route('**/api/v1/**', route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/v1/jds') return respond(route, [])
+      if (path === '/api/v1/jd-imports/material/retry') {
+        retried++
+        imports = [{ ...imports[0], status: 'queued', has_pending: true }]
+        return respond(route, imports[0])
+      }
+      if (path === '/api/v1/jd-imports') return respond(route, imports)
+      if (path === '/api/v1/market-profile') return respond(route, profile(false))
+      throw new Error(`Unexpected API ${path}`)
+    })
+    await page.goto(baseURL)
+    const modal = page.getByRole('dialog', { name: '正在识别岗位内容' })
+    await modal.waitFor()
+    imports = [{ ...imports[0], status: 'failed', has_pending: false, error_code: 'model_rate_limited' }]
+    await page.getByRole('heading', { name: '岗位识别暂时失败' }).waitFor()
+    await modal.waitFor({ state: 'detached' })
+    await page.getByRole('button', { name: '重新识别', exact: true }).click()
+    await modal.waitFor()
+    assert.equal(retried, 1)
+    assert.match(await modal.innerText(), /1 份排队中 · 0 份正在识别/)
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
+    await page.keyboard.press('Escape')
+    await modal.waitFor({ state: 'detached' })
+    await page.getByRole('button', { name: '查看识别进度（1）', exact: true }).waitFor()
   } finally { await context.close() }
 })
 

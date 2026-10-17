@@ -18,7 +18,7 @@ import {
 import { jobPilotAPI, type JobDescription, type MarketAbilitySummary } from '../api'
 import { useMarketData } from './useMarketData'
 import { JDImportPanel } from './JDImportPanel'
-import { JDImportEmptyNotice, useJDImportFeedback } from './JDImportEmptyNotice'
+import { JDImportNotice, useJDImportFeedback } from './JDImportNotice'
 
 type MarketTab = 'jobs' | 'abilities'
 type DrawerMode = 'add' | 'edit' | 'detail' | 'ability' | null
@@ -250,7 +250,6 @@ export function MarketPage() {
     setError('')
     try {
       const session = await jobPilotAPI.startJDImport(content)
-      setNotice('材料已保存，正在识别岗位。发现多个岗位时会先让你选择。')
       importFeedback.submitted(session)
       setRawJD('')
       closeDrawer()
@@ -269,7 +268,6 @@ export function MarketPage() {
 		try {
 			const session = await jobPilotAPI.startJDImport(editRawJD, selectedJD.id)
 			closeDrawer()
-			setNotice('修改内容已保存，正在重新识别；原有结果会保留到确认新的岗位内容。')
 			importFeedback.submitted(session)
 			await loadJDs(false)
 		} catch (updateError) {
@@ -311,7 +309,6 @@ export function MarketPage() {
       const current = allSamples.find(sample => sample.id === id)
       if (current && !current.analysis?.stages.length) {
         const session = await jobPilotAPI.startJDImport(current.rawText, id)
-        setNotice('正在用新的流程识别原文；多个岗位会先让你选择。')
         importFeedback.submitted(session)
         await loadJDs(false)
         return
@@ -353,10 +350,13 @@ export function MarketPage() {
           <h1>市场画像</h1>
           <p className="page-description">用目标岗位的真实 JD，整理市场要求和岗位能力清单。</p>
         </div>
-        <button className="button button-primary add-jd-button" type="button" onClick={() => setDrawerMode('add')}>
-          <Plus size={16} aria-hidden="true" />
-          添加 JD
-        </button>
+        <div className="market-heading-actions">
+          {importFeedback.pendingCount > 0 && <button className="button" type="button" onClick={importFeedback.openProgress}>查看识别进度（{importFeedback.pendingCount}）</button>}
+          <button className="button button-primary add-jd-button" type="button" onClick={() => setDrawerMode('add')}>
+            <Plus size={16} aria-hidden="true" />
+            添加 JD
+          </button>
+        </div>
       </div>
 
       {notice && (
@@ -368,11 +368,11 @@ export function MarketPage() {
       )}
       {error && <div className="market-error" role="alert"><AlertCircle size={17} /><span>{error}</span></div>}
 
-      {importFeedback.count > 0 && <JDImportEmptyNotice count={importFeedback.count} onDismiss={importFeedback.dismiss} onAdd={() => setDrawerMode('add')} />}
+      {importFeedback.visible && <JDImportNotice emptyCount={importFeedback.emptyCount} queuedCount={importFeedback.queuedCount} runningCount={importFeedback.runningCount} onDismiss={importFeedback.dismiss} onAdd={() => setDrawerMode('add')} />}
 
       {imports.map(session => <JDImportPanel key={session.id} session={session}
         onConfirm={async ids => { await jobPilotAPI.confirmJDImport(session.id, ids); setNotice('所选岗位已导入，正在分别提取内容并处理分类与能力。'); await loadJDs(false) }}
-        onRetry={async () => { await jobPilotAPI.retryJDImport(session.id); await loadJDs(false) }} />)}
+        onRetry={async () => { const retried = await jobPilotAPI.retryJDImport(session.id); importFeedback.submitted(retried); await loadJDs(false) }} />)}
 
       <section className="market-progress" aria-label="市场画像完成进度">
         <div className="progress-copy">

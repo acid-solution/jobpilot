@@ -415,10 +415,12 @@ func flattenAbilityMentions(requirements []jdanalysis.AbilityRequirement) []jdan
 func normalizeClassifications(values []parsedClassification, rawText, title string, responsibilities []string, catalog jdanalysis.Catalog) ([]jdanalysis.JobClassification, error) {
 	categories := make(map[string]struct{}, len(catalog.JobCategories))
 	specialtyParent := make(map[string]string)
+	specialtyNames := make(map[string]string)
 	for _, category := range catalog.JobCategories {
 		categories[category.Code] = struct{}{}
 		for _, specialty := range category.Specialties {
 			specialtyParent[specialty.Code] = category.Code
+			specialtyNames[specialty.Code] = specialty.Name
 		}
 	}
 	result := make([]jdanalysis.JobClassification, 0, len(values))
@@ -442,6 +444,13 @@ func normalizeClassifications(values []parsedClassification, rawText, title stri
 		}
 		if value.Reason == "" || len([]rune(value.Reason)) > 500 {
 			return nil, invalidClassification("classification reason is missing or too long")
+		}
+		name := specialtyNames[value.SpecialtyCode]
+		if value.Candidate != nil {
+			name = value.Candidate.SpecialtyName
+		}
+		if classificationReasonDeniesTarget(value.Reason, name) {
+			return nil, invalidClassification("classification reason explicitly rejects its own classification")
 		}
 
 		key := ""
@@ -494,6 +503,26 @@ func normalizeClassifications(values []parsedClassification, rawText, title stri
 		return nil, invalidClassification("valid JD must contain exactly one primary specialty")
 	}
 	return result, nil
+}
+
+// Detect explicit self-rejection, not every negative comparison with another
+// specialty. This is a consistency guard, not a substitute for semantic review.
+func classificationReasonDeniesTarget(reason, specialtyName string) bool {
+	compact := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	text, name := compact(reason), compact(specialtyName)
+	for _, marker := range []string{"不归为该分类", "不应归为该分类", "不归为次要分类", "不满足该分类", "不支持该分类"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	if name != "" {
+		for _, prefix := range []string{"不满足", "不属于", "不归为", "不应归为"} {
+			if strings.Contains(text, prefix+name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalizeClassificationCandidate(candidate *jdanalysis.JobClassificationCandidate, specialtyParent map[string]string) (*jdanalysis.JobClassificationCandidate, error) {

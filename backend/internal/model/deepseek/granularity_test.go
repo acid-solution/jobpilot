@@ -59,3 +59,13 @@ func TestExtractionRejectsInventedOrCompositeNames(t *testing.T) {
 		}
 	}
 }
+
+func TestClassificationReasonCannotRejectItsOwnTarget(t *testing.T) {
+	reason := "未体现规划、工具调用、状态管理或自主执行闭环，不满足Agent应用核心职责，故不归为次要分类。"
+	if !classificationReasonDeniesTarget(reason, "Agent 应用") {
+		t.Fatal("explicitly rejected classification was accepted")
+	}
+	if classificationReasonDeniesTarget("未体现工具闭环，不满足Agent应用核心职责，工作仍属于业务后端。", "业务后端") {
+		t.Fatal("comparison with another specialty was mistaken for self-rejection")
+	}
+}

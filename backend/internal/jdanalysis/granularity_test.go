@@ -55,6 +55,37 @@ func TestExactAliasesAreDeduplicatedWithoutCallingModel(t *testing.T) {
 	}
 }
 
+func TestNormalizerSendsExplicitIndexesWithoutInternalCoordinates(t *testing.T) {
+	model := normalizationFunction(func(_ context.Context, _, _, _, prompt string, out any) error {
+		start := strings.LastIndex(prompt, "输入：")
+		var inputs []map[string]json.RawMessage
+		if start < 0 || json.Unmarshal([]byte(prompt[start+len("输入："):]), &inputs) != nil || len(inputs) != 2 {
+			t.Fatal("missing structured input")
+		}
+		for i, item := range inputs {
+			var index int
+			if json.Unmarshal(item["index"], &index) != nil || index != i {
+				t.Errorf("input index is not explicit: %s", item["index"])
+			}
+			if _, exists := item["Requirement"]; exists {
+				t.Error("internal requirement coordinate leaked")
+			}
+			if _, exists := item["Option"]; exists {
+				t.Error("internal option coordinate leaked")
+			}
+		}
+		return json.Unmarshal([]byte(`{"decisions":[{"index":0,"decision":"reuse_existing","existing_ability_code":"go","relation":"within_scope","reason":"Go并发属于Go"},{"index":1,"decision":"reuse_existing","existing_ability_code":"go","relation":"within_scope","reason":"Go接口属于Go"}]}`), out)
+	})
+	n := VectorNormalizer{Model: model}
+	input := Result{AbilityRequirements: []AbilityRequirement{
+		{Operator: RequirementSingle, RequiredCount: 1, Evidence: "Go", Options: []AbilityRequirementOption{{RawLabel: "Go", Evidence: "Go"}}},
+		{Operator: RequirementAnyOf, RequiredCount: 1, Evidence: "Go并发或Go接口", Options: []AbilityRequirementOption{{RawLabel: "Go并发", Evidence: "Go并发"}, {RawLabel: "Go接口", Evidence: "Go接口"}}},
+	}}
+	if _, err := n.Normalize(t.Context(), uuid.New(), "test", "test", Catalog{Abilities: []AbilityOption{{Code: "go", Name: "Go"}}}, input); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPendingReviewIsNotAPublicAbility(t *testing.T) {
 	model := &normalizeModel{result: map[string]any{"decisions": []any{map[string]any{"index": 0, "decision": "request_new", "reason": "缺少具体框架", "candidate": map[string]any{"category_code": "ai", "definition": "新的独立框架"}}}}}
 	n := VectorNormalizer{Model: model}

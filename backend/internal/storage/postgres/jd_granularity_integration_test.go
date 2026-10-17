@@ -1,12 +1,16 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,7 +128,8 @@ func TestJDGranularityPersistenceIsolated(t *testing.T) {
 
 // Opt-in uses the user's supplied public JD, never production account data.
 func TestDASJDGranularityLive(t *testing.T) {
-	if os.Getenv("RUN_JD_GRANULARITY_LIVE") != "1" {
+	mode := os.Getenv("RUN_JD_GRANULARITY_LIVE")
+	if mode != "1" && mode != "followup" && mode != "normalization_only" {
 		t.Skip("explicit opt-in for the user-provided public JD")
 	}
 	env, err := godotenv.Read("../../../.env.local")
@@ -138,6 +143,20 @@ func TestDASJDGranularityLive(t *testing.T) {
 	if base == "" {
 		base = "https://api.deepseek.com"
 	}
+	endpoint, err := url.Parse(base)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host != "api.deepseek.com" || endpoint.User != nil {
+		t.Fatal("live JD acceptance is authorized only for https://api.deepseek.com")
+	}
+	limit := 8
+	if configured := os.Getenv("JD_GRANULARITY_REQUEST_LIMIT"); configured != "" {
+		limit, err = strconv.Atoi(configured)
+		if err != nil || limit < 1 || limit > 8 {
+			t.Fatal("JD_GRANULARITY_REQUEST_LIMIT must be between 1 and 8")
+		}
+	}
+	if mode != "1" {
+		limit = min(limit, 3)
+	}
 	source, err := os.ReadFile("../../model/deepseek/testdata/dbapp_go_intern.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -147,8 +166,21 @@ func TestDASJDGranularityLive(t *testing.T) {
 	defer cancel()
 	user, _, jd := granularityJD(t, db, string(source))
 	transport := &corpusTransport{base: http.DefaultTransport, redact: key}
-	client := deepseek.NewClient(base, &http.Client{Transport: &boundedJDTransport{base: transport}, Timeout: 150 * time.Second})
+	budget := &boundedJDTransport{base: transport, limit: int32(limit)}
+	defer func() {
+		t.Logf("HTTP requests sent=%d/%d input_tokens=%d output_tokens=%d", min(budget.dispatched.Load(), int32(limit)), limit, transport.Input, transport.Output)
+		if t.Failed() {
+			for i, content := range budget.responses {
+				t.Logf("model response %d: %s", i+1, strings.ReplaceAll(content, key, "[redacted]"))
+			}
+		}
+	}()
+	client := deepseek.NewClient(base, &http.Client{Transport: budget, Timeout: 150 * time.Second})
 	repo := NewAnalysisRepository(db)
+	if mode != "1" {
+		testDASJDGranularityFollowup(t, ctx, repo, client, key, model, string(source), mode == "followup")
+		return
+	}
 	worker := jdanalysis.NewWorker(repo, liveCorpusCredentials{key, model}, client, time.Second, jdanalysis.ClassificationReviewConfig{Enabled: true, Reviewer: client, APIKey: key, Model: model})
 	worker.SetNormalizer(&jdanalysis.VectorNormalizer{Model: client})
 	if worked, err := worker.ProcessOnce(ctx); err != nil || !worked {
@@ -166,6 +198,7 @@ func TestDASJDGranularityLive(t *testing.T) {
 		t.Errorf("JD was not included: %s", current.Status)
 	}
 	for _, c := range current.Analysis.Classifications {
+		t.Logf("classification: %s/%s %s: %s", c.CategoryCode, c.SpecialtyCode, c.Relation, c.Reason)
 		if c.SpecialtyCode == "ai-agent-application" {
 			t.Error("generic AI prototype responsibility was misclassified as Agent")
 		}
@@ -184,6 +217,7 @@ func TestDASJDGranularityLive(t *testing.T) {
 	}
 	for _, r := range current.Analysis.Requirements {
 		for _, o := range r.Options {
+			t.Logf("requirement: %s -> %s [%s] qualifier=%s", o.RawLabel, o.AbilityName, r.RequirementKind, o.Qualifier)
 			if !abilityidentity.IsAtomicLabel(o.RawLabel) {
 				t.Errorf("composite extraction %q", o.RawLabel)
 			}
@@ -213,14 +247,109 @@ func TestDASJDGranularityLive(t *testing.T) {
 	}
 }
 
+// Follow-up rechecks only the two failed stages and five unresolved labels from
+// the first live run. It is not a second complete extraction/pipeline evaluation.
+func testDASJDGranularityFollowup(t *testing.T, ctx context.Context, repo *AnalysisRepository, client *deepseek.Client, key, model, raw string, classify bool) {
+	t.Helper()
+	catalog, err := repo.Catalog(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote := func(needle string) string {
+		t.Helper()
+		for _, line := range strings.Split(raw, "\n") {
+			if strings.Contains(line, needle) {
+				return strings.TrimSpace(line)
+			}
+		}
+		t.Fatalf("fixture is missing source clause %q", needle)
+		return ""
+	}
+	input := jdanalysis.Result{Title: "go开发实习", DocumentType: jdanalysis.DocumentJobDescription, ValidationStatus: jdanalysis.ValidationValid}
+	for _, phrase := range []string{"参与防火墙产品", "负责产品功能模块", "完成功能模块", "协助团队探索AI"} {
+		input.Responsibilities = append(input.Responsibilities, quote(phrase))
+	}
+	if classify {
+		classes, err := client.ClassifyJD(ctx, key, model, raw, input, catalog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range classes {
+			t.Logf("follow-up classification: %s/%s %s: %s", c.CategoryCode, c.SpecialtyCode, c.Relation, c.Reason)
+			if c.SpecialtyCode == "ai-agent-application" {
+				t.Error("generic AI prototype still misclassified as Agent")
+			}
+		}
+	}
+	for _, item := range []struct{ label, source, qualifier, kind string }{
+		{"API开发", "熟悉前后端分离架构", "掌握API开发思想及相关开发工具", "required"},
+		{"数通知识", "具备扎实的数通知识", "具备扎实者优先", "preferred"},
+		{"AI接口调用", "了解大语言模型", "有实践者优先", "preferred"},
+		{"AI", "了解大语言模型", "在网络安全、流量识别、日志分析、异常检测等方向有基础认知", "required"},
+		{"机器学习", "了解大语言模型", "了解基础概念", "required"},
+	} {
+		evidence := quote(item.source)
+		if !strings.Contains(evidence, item.label) {
+			t.Fatalf("follow-up label %s is not in its source", item.label)
+		}
+		input.AbilityRequirements = append(input.AbilityRequirements, jdanalysis.AbilityRequirement{
+			Operator: jdanalysis.RequirementSingle, RequiredCount: 1, RequirementKind: item.kind, Evidence: evidence,
+			Options: []jdanalysis.AbilityRequirementOption{{RawLabel: item.label, AbilityName: item.label, Qualifier: item.qualifier, Evidence: evidence}},
+		})
+	}
+	normalizer := &jdanalysis.VectorNormalizer{Model: client}
+	result, err := normalizer.Normalize(ctx, uuid.New(), key, model, catalog, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := map[string]string{}
+	for _, r := range result.AbilityRequirements {
+		for _, o := range r.Options {
+			resolved[o.RawLabel] = o.AbilityName
+			if o.CatalogCode == "" {
+				resolved[o.RawLabel] = "pending_review"
+			}
+			t.Logf("follow-up normalization: %s -> %s [%s, %s] %s", o.RawLabel, resolved[o.RawLabel], o.NormalizationRelation, r.RequirementKind, o.NormalizationReason)
+		}
+	}
+	for rawLabel, expected := range map[string]string{"API开发": "软件设计", "数通知识": "计算机网络"} {
+		if resolved[rawLabel] != expected {
+			t.Errorf("scope not resolved: %s -> %s, expected %s", rawLabel, resolved[rawLabel], expected)
+		}
+	}
+}
+
 type boundedJDTransport struct {
 	base       http.RoundTripper
+	limit      int32
 	dispatched atomic.Int32
+	responses  []string
 }
 
 func (t *boundedJDTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.dispatched.Add(1) > 8 {
+	if req.URL.Scheme != "https" || req.URL.Host != "api.deepseek.com" {
+		return nil, errors.New("unauthorized live JD acceptance destination")
+	}
+	if t.dispatched.Add(1) > t.limit {
 		return nil, errors.New("live JD acceptance request budget exhausted")
 	}
-	return t.base.RoundTrip(req)
+	response, err := t.base.RoundTrip(req)
+	if err != nil {
+		return response, err
+	}
+	data, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(data))
+	var value struct {
+		Choices []struct {
+			Message struct{ Content string }
+		}
+	}
+	if json.Unmarshal(data, &value) == nil && len(value.Choices) > 0 {
+		t.responses = append(t.responses, value.Choices[0].Message.Content)
+	}
+	return response, nil
 }

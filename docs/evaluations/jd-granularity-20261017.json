@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-17",
+  "timezone": "Asia/Shanghai",
+  "sample": "user-provided DBAPP Go intern JD",
+  "fixture": "backend/internal/model/deepseek/testdata/dbapp_go_intern.txt",
+  "destination": "https://api.deepseek.com",
+  "requested_model": "deepseek-chat",
+  "payer": "platform",
+  "authorized_request_limit": 8,
+  "actual_http_requests": 8,
+  "prompt_tokens": 35012,
+  "completion_tokens": 4730,
+  "cache_hit_tokens": null,
+  "estimated_cost": null,
+  "production_account_modified": false,
+  "end_to_end_acceptance_passed": false,
+  "stopped_at_user_request": true,
+  "runs": [
+    {
+      "run": 1,
+      "mode": "base_worker",
+      "http_requests": 5,
+      "prompt_tokens": 17855,
+      "completion_tokens": 4303,
+      "go_test_elapsed_seconds": 17.44,
+      "analysis_job_status": "succeeded",
+      "test_passed": false,
+      "confirmed_abilities": ["Go", "Linux", "计算机网络", "操作系统", "数据结构与算法", "MySQL", "PostgreSQL", "Redis", "软件设计", "大模型基础"],
+      "pending_labels": ["AI", "AI接口调用", "API开发", "数通知识", "机器学习"],
+      "issue": "Agent secondary classification contradicts its own rejection reason"
+    },
+    {
+      "run": 2,
+      "mode": "targeted_followup",
+      "http_requests": 1,
+      "prompt_tokens": 5623,
+      "completion_tokens": 158,
+      "go_test_elapsed_seconds": 2.47,
+      "test_passed": false,
+      "issues": ["Agent secondary classification remained", "test source selector selected a short block and failed before normalization"]
+    },
+    {
+      "run": 3,
+      "mode": "targeted_followup",
+      "http_requests": 2,
+      "prompt_tokens": 11534,
+      "completion_tokens": 269,
+      "go_test_elapsed_seconds": 3.31,
+      "test_passed": false,
+      "classification": [{"category_code": "backend", "specialty_code": "backend-business", "relation": "primary"}],
+      "issue": "normalization required correction; the next HTTP request was blocked before dispatch by the remaining budget"
+    }
+  ],
+  "post_run_changes": {
+    "explicit_normalization_input_indexes": "offline regression passed; not live retested",
+    "raw_responses_from_first_runs": "not retained; exact normalization failure cause not established",
+    "offline_passed_tests": 333,
+    "offline_passed_packages": 27,
+    "go_vet_passed": true
+  },
+  "limitations": ["one JD only", "no Bailian vector recall", "no independent ability review", "no level grading", "no production-page acceptance", "targeted followups are not a fresh complete pipeline run"]
+}

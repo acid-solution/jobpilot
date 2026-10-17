@@ -55,7 +55,7 @@ func agentError(c *gin.Context, err error) {
 }
 func listAgentConversations(s AgentService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		v, e := s.List(c, identity.UserID(c))
+		v, e := s.List(c.Request.Context(), identity.UserID(c))
 		if e != nil {
 			agentError(c, e)
 			return
@@ -69,7 +69,7 @@ func getAgentConversation(s AgentService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		v, e := s.Get(c, identity.UserID(c), id)
+		v, e := s.Get(c.Request.Context(), identity.UserID(c), id)
 		if e != nil {
 			agentError(c, e)
 			return
@@ -86,7 +86,7 @@ func createAgentConversation(s AgentService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "新建对话参数错误")
 			return
 		}
-		v, e := s.Create(c, identity.UserID(c), in.Page)
+		v, e := s.Create(c.Request.Context(), identity.UserID(c), in.Page)
 		if e != nil {
 			agentError(c, e)
 			return
@@ -100,7 +100,7 @@ func deleteAgentConversation(s AgentService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		if e := s.Delete(c, identity.UserID(c), id); e != nil {
+		if e := s.Delete(c.Request.Context(), identity.UserID(c), id); e != nil {
 			agentError(c, e)
 			return
 		}

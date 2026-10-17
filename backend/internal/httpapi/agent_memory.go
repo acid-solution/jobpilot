@@ -28,7 +28,7 @@ func memoryError(c *gin.Context, e error) {
 }
 func registerAgentMemory(api *gin.RouterGroup, s *agent.Service) {
 	api.GET("/agent/memories", func(c *gin.Context) {
-		v, e := s.MemorySnapshot(c, identity.UserID(c))
+		v, e := s.MemorySnapshot(c.Request.Context(), identity.UserID(c))
 		if e != nil {
 			memoryError(c, e)
 			return
@@ -51,7 +51,7 @@ func registerAgentMemory(api *gin.RouterGroup, s *agent.Service) {
 				}
 				id = &v
 			}
-			v, e := s.SaveMemory(c, identity.UserID(c), id, w)
+			v, e := s.SaveMemory(c.Request.Context(), identity.UserID(c), id, w)
 			if e != nil {
 				memoryError(c, e)
 				return
@@ -72,14 +72,14 @@ func registerAgentMemory(api *gin.RouterGroup, s *agent.Service) {
 			writeError(c, 400, "invalid_memory", "请提供记忆版本和内容哈希")
 			return
 		}
-		if e := s.ForgetMemory(c, identity.UserID(c), id, w); e != nil {
+		if e := s.ForgetMemory(c.Request.Context(), identity.UserID(c), id, w); e != nil {
 			memoryError(c, e)
 			return
 		}
 		c.Status(204)
 	})
 	api.GET("/agent/memory-proposals", func(c *gin.Context) {
-		v, e := s.MemoryProposals(c, identity.UserID(c))
+		v, e := s.MemoryProposals(c.Request.Context(), identity.UserID(c))
 		if e != nil {
 			memoryError(c, e)
 			return
@@ -101,7 +101,7 @@ func registerAgentMemory(api *gin.RouterGroup, s *agent.Service) {
 			writeError(c, 400, "invalid_memory", "请明确确认或拒绝并提供建议哈希")
 			return
 		}
-		v, e := s.ResolveMemoryEdited(c, identity.UserID(c), id, *in.Approve, in.Hash, in.Value)
+		v, e := s.ResolveMemoryEdited(c.Request.Context(), identity.UserID(c), id, *in.Approve, in.Hash, in.Value)
 		if e != nil {
 			memoryError(c, e)
 			return
@@ -118,7 +118,7 @@ func registerAgentMemory(api *gin.RouterGroup, s *agent.Service) {
 			writeError(c, 400, "invalid_page", "消息序号无效")
 			return
 		}
-		v, e := s.MessageHistory(c, identity.UserID(c), id, before)
+		v, e := s.MessageHistory(c.Request.Context(), identity.UserID(c), id, before)
 		if e != nil {
 			memoryError(c, e)
 			return

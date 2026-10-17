@@ -6,7 +6,7 @@ import { build, preview } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium } from 'playwright'
 
-// Opt-in conventional browser tests: no computer-use service, credentials or model calls.
+// Opt-in market and practice page tests: no credentials or model calls.
 const enabled = process.env.RUN_MARKET_E2E === '1'
 let directory, server, browser, baseURL
 before(async () => {
@@ -14,7 +14,7 @@ before(async () => {
   await mkdir(resolve('node_modules/.tmp'), { recursive: true })
   directory = await mkdtemp(resolve('node_modules/.tmp/market-browser-'))
   await writeFile(`${directory}/index.html`, '<div id="root"></div><script type="module" src="/entry.tsx"></script>')
-  await writeFile(`${directory}/entry.tsx`, `import { createRoot } from 'react-dom/client'; import { MarketPage } from ${JSON.stringify(resolve('src/pages/MarketPage.tsx'))}; createRoot(document.getElementById('root')!).render(<MarketPage />);`)
+  await writeFile(`${directory}/entry.tsx`, `import { createRoot } from 'react-dom/client'; import { MarketPage } from ${JSON.stringify(resolve('src/pages/MarketPage.tsx'))}; import { UserProfilePage } from ${JSON.stringify(resolve('src/pages/UserProfilePage.tsx'))}; import { KnowledgeGapsPage } from ${JSON.stringify(resolve('src/pages/KnowledgeGapsPage.tsx'))}; const page = new URLSearchParams(location.search).get('page'); createRoot(document.getElementById('root')!).render(page === 'profile' ? <UserProfilePage target={null} /> : page === 'gaps' ? <KnowledgeGapsPage onOpenMarket={()=>{}} onOpenProfile={()=>{}} onOpenSettings={()=>{}} /> : <MarketPage />);`)
   await build({ configFile: false, root: directory, plugins: [react()], logLevel: 'error' })
   server = await preview({ configFile: false, root: directory, preview: { host: '127.0.0.1', port: 0, open: false } })
   baseURL = `http://127.0.0.1:${server.httpServer.address().port}`
@@ -36,6 +36,209 @@ const completed = { ...processing, status: 'included', job_status: 'succeeded', 
 const level = { common_levels: [2], recommended_level: 2, sample_count: 1, explicit_count: 1, inferred_count: 0, distribution: [{ level: 2, count: 1 }], higher_requirement_count: 0, status: 'ready', evidences: [] }
 function profile(done) { return { included_jd_count: done ? 1 : 0, required_jd_count: 10, complete: false, ability_grading_pending_count: 0, ability_grading_failed_count: 0, abilities: done ? [{ ability_id: 'mysql', name: 'MySQL', category: '数据库', covered_jd_count: 1, evidences: [], target_level: 2, level_summary: level, preferred_level_summary: { ...level, sample_count: 0 } }] : [] } }
 const respond = (route, data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ data }) })
+
+// Synthetic practice API shared by the two real page layouts. No model calls.
+async function practiceFixture(context, { assessed = true, failEvaluation = false, failSave = false, clarify = false, holdSave = false } = {}) {
+  const page = await context.newPage()
+  let session, heldSave, releaseSave
+  const firstSave = new Promise(resolve => { releaseSave = resolve })
+  const calls = { start: 0, save: 0, submit: 0, confirm: 0 }
+  const capability = { concept_id: 'go', name: 'Go', category: '编程语言', current_level: 2, market_level: 3, market_level_ready: true, assessed, evidence: [], levels: Array.from({ length: 6 }, (_, level) => ({ level, description: `等级 ${level}` })), level_source: 'manual', status: 'evidence_backed' }
+  const question = i => ({ id: `q${i}`, prompt: `合成问题 ${i}`, dimension: '原理', position: i, hint: '合成提示', reference: '合成答案', explanation: '合成讲解' })
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(), path = new URL(request.url()).pathname
+    if (path === '/api/v1/profile') return respond(route, { profile: { capabilities: [capability], assessed_count: assessed ? 1 : 0, pending_count: assessed ? 0 : 1, market_profile_ready: true, material_count: 0 } })
+    if (path === '/api/v1/profile/materials') return respond(route, { materials: [] })
+    if (path === '/api/v1/profile/settings') return respond(route, { settings: { weekly_hours: 12, expected_weeks: 8, existing_experience: '合成经历' } })
+    if (path === '/api/v1/knowledge-gaps') return respond(route, { readiness: { code: 'ready', included_jd_count: 10 }, stale: false })
+    if (path === '/api/v1/model-configs/deepseek') return respond(route, { configured: true })
+    if (path === '/api/v1/profile/sessions') {
+      if (request.method() === 'GET') return respond(route, { sessions: session ? [session] : [] })
+      calls.start++
+      const { mode } = request.postDataJSON()
+      session = { id: `session-${calls.start}`, concept_id: 'go', concept_name: 'Go', mode, base_level: 2, target_level: 3, status: 'ready', questions: Array.from({ length: mode === 'initial' ? 3 : 6 }, (_, i) => question(i + 1)), answers: [], clarification_count: 0, level_updated: false, created_at: '2026-10-17T00:00:00Z' }
+      return respond(route, { session })
+    }
+    if (path.endsWith('/answers')) {
+      calls.save++
+      if (failSave && calls.save === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'save_unavailable', message: '合成保存故障' } }) })
+      const answer = request.postDataJSON()
+      session.answers = [...session.answers.filter(item => item.question_id !== answer.question_id), answer]
+      if (holdSave && calls.save === 1) { heldSave = route; releaseSave(); return }
+      return respond(route, { session })
+    }
+    if (path.endsWith('/submit')) {
+      calls.submit++
+      if (failEvaluation && calls.submit === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'model_unavailable', message: '合成模型故障' } }) })
+      session.answers = request.postDataJSON().answers
+      if (clarify && calls.submit === 1) {
+        session = { ...session, status: 'clarifying', clarification_count: 1, questions: [...session.questions, question(7)] }
+      } else {
+        session = { ...session, status: 'evaluated', evaluation: { verdict: session.mode === 'review' ? 'review' : 'pass', suggested_level: session.mode === 'initial' ? 0 : undefined, summary: '合成反馈', question_results: [] } }
+      }
+      return respond(route, { session })
+    }
+    if (path.endsWith('/confirm')) {
+      calls.confirm++
+      session.level_updated = true
+      capability.current_level = session.mode === 'initial' ? 0 : session.target_level
+      return respond(route, { session })
+    }
+    throw new Error(`Unexpected practice API ${path}`)
+  })
+  return { page, calls, firstSave, releaseSave: () => respond(heldSave, { session }), session: () => session }
+}
+
+test('profile autosaves finish before evaluation; clarification and confirmation keep their boundaries', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const f = await practiceFixture(context, { clarify: true, holdSave: true })
+    await f.page.goto(`${baseURL}?page=profile`)
+    await f.page.locator('.profile-ability-row').click()
+    await f.page.getByRole('button', { name: '验证下一级能力' }).click()
+    const inputs = f.page.locator('.profile-question-list textarea')
+    await inputs.last().waitFor()
+    assert.equal(await inputs.count(), 6)
+    for (let i = 0; i < 6; i++) await inputs.nth(i).fill(`合成回答 ${i}`)
+    await f.firstSave
+    await f.page.getByRole('button', { name: '提交全部回答' }).click()
+    assert.equal(f.calls.submit, 0)
+    await f.releaseSave()
+    await f.page.getByText('合成问题 7', { exact: false }).waitFor()
+    assert.equal(await inputs.count(), 7)
+    assert.equal(await inputs.first().inputValue(), '合成回答 0')
+    await inputs.last().fill('合成澄清回答')
+    await f.page.getByRole('button', { name: '提交全部回答' }).click()
+    await f.page.getByRole('button', { name: '确认更新等级' }).waitFor()
+    assert.equal(f.calls.confirm, 0)
+    await f.page.getByRole('button', { name: '确认更新等级' }).evaluate(button => { button.click(); button.click() })
+    await f.page.getByRole('heading', { name: '能力等级已更新' }).waitFor()
+    assert.equal(f.calls.start, 1)
+    assert.equal(f.calls.submit, 2)
+    assert.equal(f.calls.confirm, 1)
+  } finally { await context.close() }
+})
+
+test('initial assessment remains three questions and L0 only changes after confirmation', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const f = await practiceFixture(context, { assessed: false })
+    await f.page.goto(`${baseURL}?page=profile`)
+    await f.page.locator('.profile-ability-row').click()
+    await f.page.getByRole('button', { name: '初始能力评估' }).evaluate(button => { button.click(); button.click() })
+    const inputs = f.page.locator('.profile-question-list textarea')
+    await inputs.last().waitFor()
+    assert.equal(await inputs.count(), 3)
+    for (let i = 0; i < 3; i++) await inputs.nth(i).fill('合成回答')
+    await f.page.getByRole('button', { name: '提交全部回答' }).click()
+    await f.page.getByRole('heading', { name: '建议初始等级 L0' }).waitFor()
+    assert.equal(f.calls.start, 1)
+    assert.equal(f.calls.confirm, 0)
+    // A page reload must retain an evaluated session that still needs consent.
+    await f.page.reload()
+    await f.page.locator('.profile-ability-row').click()
+    await f.page.getByRole('button', { name: '继续上次问答' }).click()
+    await f.page.getByRole('heading', { name: '建议初始等级 L0' }).waitFor()
+    await f.page.getByRole('button', { name: '确认更新等级' }).click()
+    await f.page.getByRole('heading', { name: '能力等级已更新' }).waitFor()
+    assert.equal(f.calls.confirm, 1)
+  } finally { await context.close() }
+})
+
+test('interview resumes saved answers and retries evaluation without saving the last answer twice', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const f = await practiceFixture(context, { failEvaluation: true })
+    await f.page.goto(`${baseURL}?page=gaps`)
+    await f.page.getByRole('tab', { name: '面试问答' }).click()
+    await f.page.getByRole('button', { name: '新建问答' }).click()
+    for (let i = 1; i <= 6; i++) {
+      if (i === 3) {
+        await f.page.reload()
+        await f.page.getByRole('tab', { name: '面试问答' }).click()
+        await f.page.getByRole('button', { name: '继续上次问答' }).click()
+      }
+      await f.page.getByRole('heading', { name: `合成问题 ${i}`, exact: true }).waitFor()
+      await f.page.getByLabel('你的回答').fill(`合成回答 ${i}`)
+      await f.page.getByRole('button', { name: '提交并继续' }).click()
+    }
+    await f.page.getByRole('heading', { name: '回答已保存，等待模型评估' }).waitFor()
+    assert.equal(f.calls.save, 6)
+    await f.page.getByRole('button', { name: '重试评估' }).click()
+    await f.page.getByRole('heading', { name: '模型建议升级' }).waitFor()
+    assert.equal(f.calls.save, 6)
+    assert.equal(f.calls.submit, 2)
+    assert.equal(f.calls.confirm, 0)
+    await f.page.reload()
+    await f.page.getByRole('tab', { name: '面试问答' }).click()
+    await f.page.getByRole('button', { name: '继续上次问答' }).click()
+    await f.page.getByRole('button', { name: '确认提升至 L3' }).evaluate(button => { button.click(); button.click() })
+    await f.page.getByText('已确认，用户画像更新为 L3。', { exact: true }).waitFor()
+    assert.equal(f.calls.confirm, 1)
+  } finally { await context.close() }
+})
+
+test('review exposes aids and never offers a grade update', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const f = await practiceFixture(context)
+    await f.page.goto(`${baseURL}?page=gaps`)
+    await f.page.getByRole('tab', { name: '面试问答' }).click()
+    await f.page.getByRole('button', { name: '复习练习' }).click()
+    await f.page.getByRole('button', { name: '新建问答' }).click()
+    await f.page.getByRole('button', { name: '查看提示' }).click()
+    await f.page.getByText('合成提示', { exact: true }).waitFor()
+    for (let i = 1; i <= 6; i++) {
+      await f.page.getByRole('heading', { name: `合成问题 ${i}`, exact: true }).waitFor()
+      await f.page.getByLabel('你的回答').fill('合成复习回答')
+      await f.page.getByRole('button', { name: '提交并继续' }).click()
+    }
+    await f.page.getByRole('heading', { name: '复习反馈' }).waitFor()
+    assert.equal(await f.page.getByRole('button', { name: /确认.*(提升|等级)/ }).count(), 0)
+    assert.equal(f.calls.confirm, 0)
+  } finally { await context.close() }
+})
+
+test('autosave failure is visible and a later full submission preserves local answers', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const f = await practiceFixture(context, { failSave: true })
+    await f.page.goto(`${baseURL}?page=profile`)
+    await f.page.locator('.profile-ability-row').click()
+    await f.page.getByRole('button', { name: '验证下一级能力' }).click()
+    const inputs = f.page.locator('.profile-question-list textarea')
+    await inputs.last().waitFor()
+    await inputs.first().fill('保存失败也保留的回答')
+    await inputs.nth(1).focus()
+    await f.page.getByRole('alert').filter({ hasText: '回答暂未保存' }).waitFor()
+    assert.equal(await inputs.first().inputValue(), '保存失败也保留的回答')
+    for (let i = 1; i < 6; i++) await inputs.nth(i).fill(`其余回答 ${i}`)
+    await f.page.getByRole('button', { name: '提交全部回答' }).click()
+    await f.page.getByRole('button', { name: '确认更新等级' }).waitFor()
+    assert.equal(f.session().answers[0].answer, '保存失败也保留的回答')
+    assert.equal(f.calls.submit, 1)
+  } finally { await context.close() }
+})
+
+test('a late save cannot replace a newly opened practice session', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const f = await practiceFixture(context, { holdSave: true })
+    await f.page.goto(`${baseURL}?page=gaps`)
+    await f.page.getByRole('tab', { name: '面试问答' }).click()
+    await f.page.getByRole('button', { name: '新建问答' }).click()
+    await f.page.getByLabel('你的回答').fill('旧会话回答')
+    await f.page.getByRole('button', { name: '提交并继续' }).click()
+    await f.firstSave
+    await f.page.getByRole('button', { name: '返回选择' }).click()
+    await f.page.getByRole('button', { name: '新建问答' }).click()
+    await f.releaseSave()
+    await f.page.getByRole('heading', { name: '合成问题 1', exact: true }).waitFor()
+    assert.equal(await f.page.getByLabel('你的回答').inputValue(), '')
+    assert.equal(f.session().id, 'session-2')
+    assert.equal(f.calls.submit, 0)
+  } finally { await context.close() }
+})
 
 test('search and status filters are local and keep the loaded records', { skip: !enabled, timeout: 30000 }, async () => {
   const context = await browser.newContext()

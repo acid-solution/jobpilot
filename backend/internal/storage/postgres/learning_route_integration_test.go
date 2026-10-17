@@ -22,7 +22,7 @@ func (routeTestCredentials) Credentials(context.Context, uuid.UUID) (modelconfig
 
 type routeModel struct{ calls int }
 
-func (m *routeModel) GenerateJSON(_ context.Context, _, _, _, input string, output any) error {
+func (m *routeModel) GenerateJSONWithLimit(_ context.Context, _, _, _, input string, _ int, output any) error {
 	m.calls++
 	var in learningroutes.Input
 	if err := json.Unmarshal([]byte(input), &in); err != nil {

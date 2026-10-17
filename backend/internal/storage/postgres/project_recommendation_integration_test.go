@@ -130,11 +130,14 @@ func TestProjectRecommendationLeaseAndAtomicReplacement(t *testing.T) {
 	if err = r.Complete(ctx, second, report, validate); err != nil {
 		t.Fatal(err)
 	}
-	if err = r.Select(ctx, user, ss.GoalSignature, report.ID, "p1"); err != nil {
+	if err = r.SelectWithContext(ctx, user, ss.GoalSignature, report.ID, "p1", ""); !errors.Is(err, projectrecs.ErrInvalid) {
+		t.Fatalf("selection without its profile basis was accepted: %v", err)
+	}
+	if err = r.SelectWithContext(ctx, user, ss.GoalSignature, report.ID, "p1", projectrecs.ProjectContextHash(ss.Input)); err != nil {
 		t.Fatal(err)
 	}
 	stored, _, err := r.Get(ctx, user, ss.GoalSignature)
-	if err != nil || stored.SelectedProjectID != "p1" {
+	if err != nil || stored.SelectedProjectID != "p1" || stored.SelectedContextHash != projectrecs.ProjectContextHash(ss.Input) {
 		t.Fatalf("selected=%+v err=%v", stored, err)
 	}
 	ss.SourceHash = "hash-2"

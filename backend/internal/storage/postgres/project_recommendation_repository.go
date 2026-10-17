@@ -86,11 +86,10 @@ func (r *ProjectRecommendationRepository) Enqueue(ctx context.Context, userID uu
 	}
 	return job, err
 }
-func (r *ProjectRecommendationRepository) Select(ctx context.Context, userID uuid.UUID, signature string, reportID uuid.UUID, projectID string) error {
-	return r.SelectWithContext(ctx, userID, signature, reportID, projectID, "")
-}
-
 func (r *ProjectRecommendationRepository) SelectWithContext(ctx context.Context, userID uuid.UUID, signature string, reportID uuid.UUID, projectID, basis string) error {
+	if basis == "" {
+		return projectrecs.ErrInvalid
+	}
 	tx, err := r.database.BeginTx(ctx, nil)
 	if err != nil {
 		return err

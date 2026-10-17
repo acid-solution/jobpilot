@@ -20,9 +20,9 @@ FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata wget \
     && addgroup -S app && adduser -S -G app app
 WORKDIR /app
-COPY --from=backend /out/jobpilot-server ./jobpilot-server
-COPY --from=frontend /src/frontend/dist ./frontend/dist
-RUN mkdir -p /app/config && chown -R app:app /app
+COPY --from=backend --chown=app:app /out/jobpilot-server ./jobpilot-server
+COPY --from=frontend --chown=app:app /src/frontend/dist ./frontend/dist
+RUN mkdir -p /app/config && chown app:app /app/config
 ENV FRONTEND_DIST_DIR=/app/frontend/dist
 USER app
 EXPOSE 18081

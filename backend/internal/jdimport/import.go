@@ -50,6 +50,7 @@ type Job struct {
 }
 
 type Repository interface {
+	WindowRepository
 	Create(context.Context, uuid.UUID, uuid.UUID, string, *uuid.UUID) (Session, error)
 	Get(context.Context, uuid.UUID, uuid.UUID) (Session, error)
 	List(context.Context, uuid.UUID, uuid.UUID) ([]Session, error)
@@ -141,37 +142,22 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	task, cancel := context.WithCancel(ctx)
-	defer cancel()
-	task = modelusage.For(modelusage.Resource(task, job.TargetID, job.ID), job.UserID, job.ID, "jd_import", "user")
-	if repo, ok := w.Repo.(WindowRepository); ok {
-		task = WithWindows(task, WindowCheckpoints{Load: func(index int) ([]Candidate, bool, error) { return repo.LoadWindow(task, job, index) }, Save: func(index int, candidates []Candidate) error { return repo.SaveWindow(task, job, index, candidates) }})
-	}
-	done := make(chan error, 1)
-	go func() {
-		timer := time.NewTicker(30 * time.Second)
-		defer timer.Stop()
-		for {
-			select {
-			case <-task.Done():
-				done <- nil
-				return
-			case <-timer.C:
-				if e := w.Repo.Heartbeat(task, job); e != nil {
-					cancel()
-					done <- e
-					return
-				}
+	task := modelusage.For(modelusage.Resource(ctx, job.TargetID, job.ID), job.UserID, job.ID, "jd_import", "user")
+	candidates, err, leaseErr := workerpool.RunLeased(task, 30*time.Second,
+		func(heartbeatCtx context.Context) error { return w.Repo.Heartbeat(heartbeatCtx, job) },
+		func(workCtx context.Context) ([]Candidate, error) {
+			workCtx = WithWindows(workCtx, WindowCheckpoints{
+				Load: func(index int) ([]Candidate, bool, error) { return w.Repo.LoadWindow(workCtx, job, index) },
+				Save: func(index int, candidates []Candidate) error {
+					return w.Repo.SaveWindow(workCtx, job, index, candidates)
+				},
+			})
+			creds, err := w.Credentials.Credentials(workCtx, job.UserID)
+			if err != nil {
+				return nil, err
 			}
-		}
-	}()
-	creds, err := w.Credentials.Credentials(task, job.UserID)
-	var candidates []Candidate
-	if err == nil {
-		candidates, err = w.Detector.DetectJDs(task, creds.APIKey, creds.Model, job.RawText)
-	}
-	cancel()
-	leaseErr := <-done
+			return w.Detector.DetectJDs(workCtx, creds.APIKey, creds.Model, job.RawText)
+		})
 	if leaseErr != nil {
 		return true, leaseErr
 	}

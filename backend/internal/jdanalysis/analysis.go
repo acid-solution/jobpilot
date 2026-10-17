@@ -298,65 +298,31 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	taskCtx, cancelTask := context.WithCancel(ctx)
-	taskCtx = modelusage.For(modelusage.Resource(taskCtx, job.TargetID, job.JobDescriptionID), job.UserID, job.ID, "jd_analysis", "user")
-	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
-	heartbeatDone := make(chan error, 1)
-	go w.maintainLease(heartbeatCtx, cancelTask, job, heartbeatDone)
-	defer func() {
-		cancelHeartbeat()
-		cancelTask()
-	}()
-
-	credentials, err := w.credentials.Credentials(taskCtx, job.UserID)
-	if err != nil {
-		cancelHeartbeat()
-		leaseErr := <-heartbeatDone
-		if errors.Is(leaseErr, ErrLeaseLost) {
-			slog.Warn("discard JD analysis after lease loss", "job_id", job.ID)
-			return true, nil
-		}
-		if leaseErr != nil {
-			if failErr := w.repository.Fail(ctx, job, "heartbeat_failed", true); failErr != nil {
-				if errors.Is(failErr, ErrLeaseLost) {
-					slog.Warn("discard JD analysis after lease loss", "job_id", job.ID)
-					return true, nil
+	taskCtx := modelusage.For(modelusage.Resource(ctx, job.TargetID, job.JobDescriptionID), job.UserID, job.ID, "jd_analysis", "user")
+	var credentials modelconfig.Credentials
+	result, err, leaseErr := workerpool.RunLeased(taskCtx, w.heartbeatEvery,
+		func(heartbeatCtx context.Context) error {
+			return w.repository.Heartbeat(heartbeatCtx, job, w.leaseDuration)
+		},
+		func(workCtx context.Context) (Result, error) {
+			var err error
+			credentials, err = w.credentials.Credentials(workCtx, job.UserID)
+			if err != nil {
+				code := "model_configuration_unavailable"
+				if errors.Is(err, modelconfig.ErrNotConfigured) {
+					code = "model_not_configured"
 				}
-				return true, errors.Join(leaseErr, failErr)
+				return Result{}, NewError(code, false, err)
 			}
-			return true, leaseErr
-		}
-		code := "model_configuration_unavailable"
-		if errors.Is(err, modelconfig.ErrNotConfigured) {
-			code = "model_not_configured"
-		}
-		if failErr := w.repository.Fail(ctx, job, code, false); failErr != nil {
-			if errors.Is(failErr, ErrLeaseLost) {
-				slog.Warn("discard JD analysis failure after lease loss", "job_id", job.ID)
-				return true, nil
+			catalog, err := w.repository.Catalog(workCtx)
+			if err != nil {
+				return Result{}, NewError("catalog_unavailable", true, err)
 			}
-			return true, errors.Join(err, failErr)
-		}
-		return true, nil
+			return w.analyze(workCtx, job, credentials, catalog)
+		})
+	if ctx.Err() != nil {
+		return true, ctx.Err()
 	}
-
-	catalog, err := w.repository.Catalog(taskCtx)
-	if err != nil {
-		cancelHeartbeat()
-		leaseErr := <-heartbeatDone
-		if errors.Is(leaseErr, ErrLeaseLost) {
-			slog.Warn("discard JD analysis after lease loss", "job_id", job.ID)
-			return true, nil
-		}
-		if failErr := w.repository.Fail(ctx, job, "catalog_unavailable", true); failErr != nil && !errors.Is(failErr, ErrLeaseLost) {
-			return true, errors.Join(err, failErr)
-		}
-		return true, err
-	}
-
-	result, err := w.analyze(taskCtx, job, credentials, catalog)
-	cancelHeartbeat()
-	leaseErr := <-heartbeatDone
 	if errors.Is(leaseErr, ErrLeaseLost) {
 		slog.Warn("discard JD analysis result after lease loss", "job_id", job.ID)
 		return true, nil
@@ -399,28 +365,6 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return true, nil
-}
-
-func (w *Worker) maintainLease(ctx context.Context, cancelTask context.CancelFunc, job Job, done chan<- error) {
-	ticker := time.NewTicker(w.heartbeatEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			done <- nil
-			return
-		case <-ticker.C:
-			if err := w.repository.Heartbeat(ctx, job, w.leaseDuration); err != nil {
-				cancelTask()
-				if ctx.Err() != nil && !errors.Is(err, ErrLeaseLost) {
-					done <- nil
-					return
-				}
-				done <- err
-				return
-			}
-		}
-	}
 }
 
 func (w *Worker) recoverExpired(ctx context.Context) error {

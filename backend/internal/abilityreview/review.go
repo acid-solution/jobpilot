@@ -153,7 +153,7 @@ func (w *Worker) runOne(ctx context.Context) error {
 		return err
 	}
 
-	callCtx, cancel := context.WithCancel(ctx)
+	callCtx := ctx
 	purpose := "ability_review"
 	if request.ReviewType == "alias" {
 		purpose = "ability_alias_review"
@@ -162,32 +162,13 @@ func (w *Worker) runOne(ctx context.Context) error {
 	scope := modelusage.From(callCtx)
 	scope.LegacyUsageID = usageID
 	callCtx = modelusage.WithScope(callCtx, scope)
-	defer cancel()
-	heartbeatDone := make(chan error, 1)
-	go func() {
-		ticker := time.NewTicker(w.heartbeat)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-callCtx.Done():
-				heartbeatDone <- nil
-				return
-			case <-ticker.C:
-				if err := w.repository.Heartbeat(callCtx, request, w.lease); err != nil {
-					if callCtx.Err() != nil && !errors.Is(err, ErrLeaseLost) {
-						heartbeatDone <- nil
-						return
-					}
-					heartbeatDone <- err
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	result, reviewErr := w.reviewer.ReviewAbility(callCtx, w.apiKey, w.model, request)
-	cancel()
-	heartbeatErr := <-heartbeatDone
+	result, reviewErr, heartbeatErr := workerpool.RunLeased(callCtx, w.heartbeat,
+		func(heartbeatCtx context.Context) error {
+			return w.repository.Heartbeat(heartbeatCtx, request, w.lease)
+		},
+		func(workCtx context.Context) (Result, error) {
+			return w.reviewer.ReviewAbility(workCtx, w.apiKey, w.model, request)
+		})
 	if errors.Is(heartbeatErr, ErrLeaseLost) {
 		return heartbeatErr
 	}

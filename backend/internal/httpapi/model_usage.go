@@ -97,7 +97,7 @@ func registerModelUsage(api *gin.RouterGroup, r modelusage.Repository) {
 		if !ok {
 			return
 		}
-		v, e := r.Summary(c, identity.UserID(c), f)
+		v, e := r.Summary(c.Request.Context(), identity.UserID(c), f)
 		if e != nil {
 			handleError(c, e)
 			return
@@ -109,7 +109,7 @@ func registerModelUsage(api *gin.RouterGroup, r modelusage.Repository) {
 		if !ok {
 			return
 		}
-		v, e := r.Calls(c, identity.UserID(c), f)
+		v, e := r.Calls(c.Request.Context(), identity.UserID(c), f)
 		if e != nil {
 			handleError(c, e)
 			return
@@ -121,7 +121,7 @@ func registerModelUsage(api *gin.RouterGroup, r modelusage.Repository) {
 		if !ok {
 			return
 		}
-		v, e := r.Operations(c, identity.UserID(c), f)
+		v, e := r.Operations(c.Request.Context(), identity.UserID(c), f)
 		if e != nil {
 			handleError(c, e)
 			return

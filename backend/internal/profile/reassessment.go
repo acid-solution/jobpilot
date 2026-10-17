@@ -3,10 +3,10 @@ package profile
 import (
 	"context"
 	"errors"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
@@ -61,37 +61,23 @@ func (w *ReassessmentWorker) Run(ctx context.Context, concurrency int) {
 	})
 }
 func (w *ReassessmentWorker) runOne(ctx context.Context, job ReassessmentJob) {
-	taskCtx, cancel := context.WithCancel(ctx)
-	taskCtx = modelusage.For(taskCtx, job.UserID, job.ID, "material_analysis", "user")
-	defer cancel()
-	heartbeatDone := make(chan error, 1)
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-taskCtx.Done():
-				heartbeatDone <- nil
-				return
-			case <-ticker.C:
-				if err := w.repo.HeartbeatReassessment(taskCtx, job); err != nil {
-					cancel()
-					heartbeatDone <- err
-					return
-				}
+	taskCtx := modelusage.For(ctx, job.UserID, job.ID, "material_analysis", "user")
+	drafts, err, heartbeatErr := workerpool.RunLeased(taskCtx, 30*time.Second,
+		func(heartbeatCtx context.Context) error { return w.repo.HeartbeatReassessment(heartbeatCtx, job) },
+		func(workCtx context.Context) ([]EvidenceDraft, error) {
+			material, inputs, err := w.repo.LoadReassessment(workCtx, job)
+			if err != nil {
+				return nil, err
 			}
-		}
-	}()
-	material, inputs, err := w.repo.LoadReassessment(taskCtx, job)
-	var drafts []EvidenceDraft
-	if err == nil {
-		drafts, err = w.assessor.ExtractEvidence(taskCtx, job.UserID, material, inputs)
+			drafts, err := w.assessor.ExtractEvidence(workCtx, job.UserID, material, inputs)
+			if err == nil {
+				err = validateEvidenceDrafts(material.Text, inputs, drafts)
+			}
+			return drafts, err
+		})
+	if ctx.Err() != nil {
+		return
 	}
-	if err == nil {
-		err = validateEvidenceDrafts(material.Text, inputs, drafts)
-	}
-	cancel()
-	heartbeatErr := <-heartbeatDone
 	if errors.Is(heartbeatErr, ErrReassessmentLeaseLost) {
 		return
 	}

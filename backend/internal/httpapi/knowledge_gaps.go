@@ -12,7 +12,7 @@ import (
 
 func getKnowledgeGaps(service KnowledgeGapsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		value, err := service.Get(c, identity.UserID(c))
+		value, err := service.Get(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			writeGapsError(c, err)
 			return
@@ -22,7 +22,7 @@ func getKnowledgeGaps(service KnowledgeGapsService) gin.HandlerFunc {
 }
 func analyzeKnowledgeGaps(service KnowledgeGapsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		value, err := service.Analyze(c, identity.UserID(c))
+		value, err := service.Analyze(c.Request.Context(), identity.UserID(c))
 		if errors.Is(err, knowledgegaps.ErrNotReady) {
 			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": value.Readiness.Code, "message": value.Readiness.Message}, "data": value})
 			return

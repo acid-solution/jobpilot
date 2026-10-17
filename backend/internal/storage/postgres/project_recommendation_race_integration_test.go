@@ -141,7 +141,7 @@ func TestProjectRecommendationChecksInputsAfterUserLockIsolated(t *testing.T) {
 	if err = repo.Complete(ctx, initial, old, recommendationValidator(s, initial)); err != nil {
 		t.Fatal(err)
 	}
-	if err = repo.Select(ctx, user, ss.GoalSignature, old.ID, "chosen"); err != nil {
+	if err = repo.SelectWithContext(ctx, user, ss.GoalSignature, old.ID, "chosen", projectrecs.ProjectContextHash(ss.Input)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = repo.Enqueue(ctx, user, ss, ""); err != nil {

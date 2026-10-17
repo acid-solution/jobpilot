@@ -3,10 +3,10 @@ package embedding
 import (
 	"context"
 	"errors"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
@@ -69,60 +69,49 @@ func (w *Worker) Run(ctx context.Context, concurrency int) {
 }
 
 func (w *Worker) runOne(ctx context.Context, job Job) {
-	jobCtx, cancel := context.WithCancel(ctx)
 	user := uuid.Nil
 	if job.UserID != nil {
 		user = *job.UserID
 	}
-	jobCtx = modelusage.For(jobCtx, user, job.ID, "embedding", "platform")
-	defer cancel()
-	heartbeatDone := make(chan error, 1)
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-jobCtx.Done():
-				heartbeatDone <- nil
-				return
-			case <-ticker.C:
-				if err := w.repository.Heartbeat(jobCtx, job); err != nil {
-					cancel()
-					heartbeatDone <- err
-					return
+	jobCtx := modelusage.For(ctx, user, job.ID, "embedding", "platform")
+	var source Source
+	chunks, err, heartbeatErr := workerpool.RunLeased(jobCtx, 30*time.Second,
+		func(heartbeatCtx context.Context) error { return w.repository.Heartbeat(heartbeatCtx, job) },
+		func(workCtx context.Context) ([]VectorChunk, error) {
+			var err error
+			source, err = w.repository.Source(workCtx, job)
+			if err != nil {
+				return nil, err
+			}
+			var chunks []VectorChunk
+			parts := Split(source.Text)
+			if job.SourceType == "ability" {
+				parts = []Chunk{{Start: 0, End: len([]rune(source.Text)), Text: source.Text}}
+			}
+			chunks = make([]VectorChunk, 0, len(parts))
+			for start := 0; start < len(parts); start += 10 {
+				end := start + 10
+				if end > len(parts) {
+					end = len(parts)
+				}
+				texts := make([]string, end-start)
+				for i := start; i < end; i++ {
+					texts[i-start] = parts[i].Text
+				}
+				vectors, embedErr := w.client.Embed(workCtx, texts)
+				if embedErr != nil {
+					err = embedErr
+					break
+				}
+				for i, vector := range vectors {
+					chunks = append(chunks, VectorChunk{Chunk: parts[start+i], Vector: vector})
 				}
 			}
-		}
-	}()
-	source, err := w.repository.Source(jobCtx, job)
-	var chunks []VectorChunk
-	if err == nil {
-		parts := Split(source.Text)
-		if job.SourceType == "ability" {
-			parts = []Chunk{{Start: 0, End: len([]rune(source.Text)), Text: source.Text}}
-		}
-		chunks = make([]VectorChunk, 0, len(parts))
-		for start := 0; start < len(parts); start += 10 {
-			end := start + 10
-			if end > len(parts) {
-				end = len(parts)
-			}
-			texts := make([]string, end-start)
-			for i := start; i < end; i++ {
-				texts[i-start] = parts[i].Text
-			}
-			vectors, embedErr := w.client.Embed(jobCtx, texts)
-			if embedErr != nil {
-				err = embedErr
-				break
-			}
-			for i, vector := range vectors {
-				chunks = append(chunks, VectorChunk{Chunk: parts[start+i], Vector: vector})
-			}
-		}
+			return chunks, err
+		})
+	if ctx.Err() != nil {
+		return
 	}
-	cancel()
-	heartbeatErr := <-heartbeatDone
 	if errors.Is(heartbeatErr, ErrLeaseLost) {
 		return
 	}

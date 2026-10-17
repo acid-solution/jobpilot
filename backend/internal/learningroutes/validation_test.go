@@ -3,12 +3,13 @@ package learningroutes
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"testing"
+
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
 	"github.com/google/uuid"
-	"strings"
-	"testing"
 )
 
 func samplePlans() []Plan {
@@ -55,7 +56,7 @@ func TestAdvisoryDependencyAndCycle(t *testing.T) {
 
 type modelFixture struct{ value string }
 
-func (m modelFixture) GenerateJSON(_ context.Context, _, _, _, _ string, out any) error {
+func (m modelFixture) GenerateJSONWithLimit(_ context.Context, _, _, _, _ string, _ int, out any) error {
 	return json.Unmarshal([]byte(m.value), out)
 }
 

@@ -21,14 +21,13 @@ import {
   type ProfileMaterial,
   type ProfileMaterialType,
   type ProfilePracticeMode,
-  type ProfilePracticeSession,
   type UserProfileSettings,
   type UserProfileOverview,
 } from '../api'
+import { isResumablePractice, usePracticeSession } from '../hooks/usePracticeSession'
 
 type ProfileTab = 'info' | 'materials' | 'abilities'
 type ProfileDrawer = 'info' | 'material' | 'ability' | null
-type AssessmentMode = 'overview' | 'questions' | 'result'
 
 const materialStatus: Record<ProfileMaterial['status'], string> = {
   draft: '等待确认',
@@ -79,16 +78,12 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
   const [materialTitle, setMaterialTitle] = useState('')
   const [materialText, setMaterialText] = useState('')
   const [selectedFileName, setSelectedFileName] = useState('')
-  const [assessmentMode, setAssessmentMode] = useState<AssessmentMode>('overview')
-  const [practiceMode, setPracticeMode] = useState<ProfilePracticeMode>('validation')
-  const [session, setSession] = useState<ProfilePracticeSession | null>(null)
-  const [resumableSession, setResumableSession] = useState<ProfilePracticeSession | null>(null)
-  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [showPractice, setShowPractice] = useState(false)
   const [manualLevel, setManualLevel] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
+  const [pageBusy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
-  const [error, setError] = useState('')
+  const [pageError, setPageError] = useState('')
 
   const refresh = async () => {
     const [profileResponse, materialsResponse, settingsResponse] = await Promise.all([
@@ -100,6 +95,15 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
     setMaterials(materialsResponse.materials ?? [])
     setSettings(settingsResponse.settings)
   }
+
+  const practice = usePracticeSession({ onChanged: refresh })
+  const { session, answers } = practice
+  const busy = pageBusy || practice.busy
+  const error = pageError || practice.error
+  const setError = (value: string) => { setPageError(value); if (!value) practice.clearError() }
+  const practiceMode = session?.mode ?? 'validation'
+  const assessmentMode = showPractice ? session?.status === 'evaluated' ? 'result' : 'questions' : 'overview'
+  const resumableSession = practice.history.find(item => item.concept_id === selectedAbilityId && isResumablePractice(item))
 
   useEffect(() => {
     let active = true
@@ -127,9 +131,8 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
     setDrawer(null)
     setSelectedAbilityId(null)
     setEditingMaterial(null)
-    setAssessmentMode('overview')
-    setSession(null)
-    setAnswers({})
+    setShowPractice(false)
+    practice.reset()
     setError('')
   }
 
@@ -144,23 +147,17 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
 
   const openAbility = (capability: ProfileCapability) => {
     setSelectedAbilityId(capability.concept_id)
-    setAssessmentMode('overview')
-    setSession(null)
-    setResumableSession(null)
-    setAnswers({})
+    setShowPractice(false)
+    practice.reset()
     setError('')
     setDrawer('ability')
-    void jobPilotAPI.listProfileSessions().then((response) => {
-      setResumableSession(response.sessions.find((item) => item.concept_id === capability.concept_id && item.status !== 'evaluated') ?? null)
-    }).catch(() => {})
+    void practice.loadHistory()
   }
 
   const resumePractice = () => {
     if (!resumableSession) return
-    setSession(resumableSession)
-    setPracticeMode(resumableSession.mode)
-    setAnswers(Object.fromEntries((resumableSession.answers ?? []).map((item) => [item.question_id, item.answer])))
-    setAssessmentMode('questions')
+    practice.resume(resumableSession)
+    setShowPractice(true)
   }
 
   const openMaterial = (material?: ProfileMaterial) => {
@@ -268,40 +265,11 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
 
   const startPractice = async (mode: ProfilePracticeMode) => {
     if (!selectedAbility) return
-    setBusy(true)
     setError('')
-    setPracticeMode(mode)
-    try {
-      const response = await jobPilotAPI.startProfileSession(selectedAbility.concept_id, mode)
-      setSession(response.session)
-      setAnswers({})
-      setAssessmentMode('questions')
-    } catch (practiceError) {
-      setError(errorMessage(practiceError))
-    } finally {
-      setBusy(false)
-    }
+    const next = await practice.start(selectedAbility.concept_id, mode)
+    if (next) setShowPractice(true)
   }
-
-  const submitPractice = async () => {
-    if (!session) return
-    setBusy(true)
-    setError('')
-    try {
-      const response = await jobPilotAPI.submitProfileSession(
-        session.id,
-        session.questions.map((question) => ({ question_id: question.id, answer: answers[question.id]?.trim() ?? '' })),
-      )
-      setSession(response.session)
-      setAssessmentMode(response.session.status === 'clarifying' ? 'questions' : 'result')
-      if (response.session.status === 'clarifying') setAnswers((current) => ({ ...current, ...Object.fromEntries(response.session.answers?.map((item) => [item.question_id, item.answer]) ?? []) }))
-      await refresh()
-    } catch (submitError) {
-      setError(errorMessage(submitError))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const submitPractice = async () => { setError(''); await practice.submit() }
 
   const saveManualLevel = async () => {
     if (!selectedAbility) return
@@ -310,10 +278,9 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
     catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
   const confirmPractice = async () => {
-    if (!session) return
-    setBusy(true); setError('')
-    try { const response = await jobPilotAPI.confirmProfileSession(session.id); setSession(response.session); await refresh(); setNotice(`能力等级已由你确认更新为 L${response.session.mode === 'initial' ? response.session.evaluation?.suggested_level : response.session.target_level}。`) }
-    catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
+    setError('')
+    const next = await practice.confirm()
+    if (next) setNotice(`能力等级已由你确认更新为 L${next.mode === 'initial' ? next.evaluation?.suggested_level : next.target_level}。`)
   }
 
   const primaryAction = () => {
@@ -382,8 +349,8 @@ export function UserProfilePage({ target }: { target: JobTarget | null }) {
           {error && <p className="form-error" role="alert">{error}</p>}
           {assessmentMode === 'overview' && resumableSession && <section className="assessment-choice"><p>上次问答尚未完成，已保存的回答可以继续使用。</p><button className="button" type="button" onClick={resumePractice}>继续上次问答</button></section>}
           {assessmentMode === 'overview' && <section className="assessment-choice"><h3>{selectedAbility.assessed ? '继续验证或复习' : '选择补充方式'}</h3>{!selectedAbility.assessed && <p>未评估与明确设置的 L0 不同。可先补材料、完成最多 3 题初评，或自行设置等级。</p>}<label>自行设置或更正等级<select value={manualLevel} onChange={(event) => setManualLevel(Number(event.target.value))}>{[0, 1, 2, 3, 4, 5].map((level) => <option value={level} key={level}>L{level} · {selectedAbility.levels.find((item) => item.level === level)?.description ?? ''}</option>)}</select></label><button className="button" type="button" disabled={busy} onClick={saveManualLevel}>确认设置 L{manualLevel}</button>{!selectedAbility.assessed && <button type="button" disabled={busy} onClick={() => startPractice('initial')}><MessageSquareText size={18} /><span><strong>初始能力评估</strong><small>最多 3 题，结果由你确认</small></span><ChevronRight size={17} /></button>}{selectedAbility.assessed && selectedAbility.current_level < 5 && <button type="button" disabled={busy} onClick={() => startPractice('validation')}><MessageSquareText size={18} /><span><strong>验证下一级能力</strong><small>6 道核心题，最多 3 道追问；通过后仍需你确认</small></span><ChevronRight size={17} /></button>}<button type="button" disabled={busy} onClick={() => startPractice('review')}><RotateCw size={18} /><span><strong>生成复习题</strong><small>提示、参考答案和反馈；不改变等级</small></span><ChevronRight size={17} /></button>{busy && <p><LoaderCircle className="spin" size={16} /> 正在生成问题……</p>}</section>}
-          {assessmentMode === 'questions' && session && <section className="question-card profile-question-list"><span>{practiceMode === 'validation' ? `本次验证 L${session.base_level} → L${session.target_level}` : practiceMode === 'initial' ? '初始能力评估' : `本次复习 L${session.target_level}`}</span>{session.questions.map((question, index) => <label key={question.id}><strong>{index + 1}. {question.prompt}</strong><small>{question.dimension}</small>{practiceMode === 'review' && <details><summary>提示与参考答案</summary><p>{question.hint}</p><p>{question.reference}</p><p>{question.explanation}</p></details>}<textarea value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} onBlur={() => { if ((answers[question.id] ?? '').trim()) void jobPilotAPI.saveProfileAnswer(session.id, question.id, answers[question.id]).catch(() => {}) }} placeholder="结合原理、真实场景和你的处理过程回答……" /></label>)}<div className="drawer-actions"><button className="button" type="button" disabled={busy} onClick={() => setAssessmentMode('overview')}>返回</button><button className="button button-primary" type="button" disabled={busy || session.questions.some((question) => !(answers[question.id] ?? '').trim())} onClick={submitPractice}>{busy ? '评估中……' : '提交全部回答'}</button></div></section>}
-          {assessmentMode === 'result' && session?.evaluation && <section className="question-card profile-practice-result"><span>{session.level_updated ? '已确认等级' : practiceMode === 'review' ? '复习完成' : '评估反馈'}</span><h3>{session.level_updated ? '能力等级已更新' : practiceMode === 'review' ? '本次结果不会修改等级' : session.evaluation.verdict === 'pass' ? `建议升至 L${session.target_level}` : practiceMode === 'initial' ? `建议初始等级 L${session.evaluation.suggested_level ?? 0}` : '原能力等级保持不变'}</h3><p>{session.evaluation.summary}</p>{session.evaluation.question_results.map((result, index) => <div className="profile-question-result" key={result.question_id}><b>{result.passed ? '通过' : '需要补充'} · 第 {index + 1} 题</b><p>{result.feedback}</p></div>)}<div className="drawer-actions">{!session.level_updated && (practiceMode === 'initial' && session.evaluation.suggested_level !== undefined || practiceMode === 'validation' && session.evaluation.verdict === 'pass') && <button className="button button-primary" type="button" disabled={busy} onClick={confirmPractice}>确认更新等级</button>}<button className="button" type="button" onClick={closeDrawer}>完成</button></div></section>}
+          {assessmentMode === 'questions' && session && <section className="question-card profile-question-list"><span>{practiceMode === 'validation' ? `本次验证 L${session.base_level} → L${session.target_level}` : practiceMode === 'initial' ? '初始能力评估' : `本次复习 L${session.target_level}`}</span>{session.questions.map((question, index) => <label key={question.id}><strong>{index + 1}. {question.prompt}</strong><small>{question.dimension}</small>{practiceMode === 'review' && <details><summary>提示与参考答案</summary><p>{question.hint}</p><p>{question.reference}</p><p>{question.explanation}</p></details>}<textarea disabled={practice.busy} value={answers[question.id] ?? ''} onChange={(event) => practice.setAnswer(question.id, event.target.value)} onBlur={() => { if ((answers[question.id] ?? '').trim()) void practice.saveAnswer(question.id, answers[question.id]) }} placeholder="结合原理、真实场景和你的处理过程回答……" /></label>)}<div className="drawer-actions"><button className="button" type="button" disabled={busy} onClick={() => setShowPractice(false)}>返回</button><button className="button button-primary" type="button" disabled={busy || session.questions.some((question) => !(answers[question.id] ?? '').trim())} onClick={submitPractice}>{busy ? '评估中……' : '提交全部回答'}</button></div></section>}
+          {assessmentMode === 'result' && session?.evaluation && <section className="question-card profile-practice-result"><span>{session.level_updated ? '已确认等级' : practiceMode === 'review' ? '复习完成' : '评估反馈'}</span><h3>{session.level_updated ? '能力等级已更新' : practiceMode === 'review' ? '本次结果不会修改等级' : practiceMode === 'initial' ? `建议初始等级 L${session.evaluation.suggested_level ?? 0}` : session.evaluation.verdict === 'pass' ? `建议升至 L${session.target_level}` : '原能力等级保持不变'}</h3><p>{session.evaluation.summary}</p>{session.evaluation.question_results.map((result, index) => <div className="profile-question-result" key={result.question_id}><b>{result.passed ? '通过' : '需要补充'} · 第 {index + 1} 题</b><p>{result.feedback}</p></div>)}<div className="drawer-actions">{!session.level_updated && (practiceMode === 'initial' && session.evaluation.suggested_level !== undefined || practiceMode === 'validation' && session.evaluation.verdict === 'pass') && <button className="button button-primary" type="button" disabled={busy} onClick={confirmPractice}>确认更新等级</button>}<button className="button" type="button" onClick={closeDrawer}>完成</button></div></section>}
         </div>}
 
         {drawer === 'material' && <div className="drawer-body material-form"><label className={`upload-card ${busy ? 'is-busy' : ''}`}><input type="file" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" disabled={busy} onChange={extractMaterialFile} /><Upload size={21} /><strong>{busy ? '正在提取文件文字……' : selectedFileName ? `已读取：${selectedFileName}` : '点击选择 PDF、DOCX、TXT 或 Markdown'}</strong><span>系统只在内存中提取文字，不保存原文件；提取后请检查内容。</span></label><label>材料类型<select value={materialType} onChange={(event) => setMaterialType(event.target.value as ProfileMaterialType)}><option value="resume">简历文本</option><option value="experience">经历自述</option></select></label><label>材料标题<input value={materialTitle} maxLength={120} onChange={(event) => setMaterialTitle(event.target.value)} placeholder="例如：后端开发实习简历" /></label><label htmlFor="material-text">完整内容</label><textarea id="material-text" value={materialText} onChange={(event) => setMaterialText(event.target.value)} placeholder="选择文件自动提取文字，或直接粘贴简历、项目经历和科研经历……" />{error && <p className="form-error" role="alert">{error}</p>}<div className="drawer-actions"><button className="button" type="button" disabled={busy} onClick={closeDrawer}>取消</button><button className="button button-primary" type="button" disabled={busy || materialTitle.trim().length === 0 || materialText.trim().length < 20} onClick={saveMaterial}>{busy ? '处理中……' : <>保存草稿 <ArrowRight size={15} /></>}</button></div></div>}

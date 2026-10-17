@@ -90,9 +90,8 @@ type Dependencies struct {
 
 func NewRouter(dependencies Dependencies) *gin.Engine {
 	router := gin.New()
-	// Handlers pass *gin.Context to services. Forward request deadlines and
-	// values, including the account lock scope, to those repository calls.
-	router.ContextWithFallback = true
+	// Services receive Request.Context(), never the pooled Gin context.
+	// This preserves cancellation and scope values without retaining request UI state.
 	router.Use(gin.Logger(), gin.Recovery())
 
 	router.GET("/health/live", func(c *gin.Context) {
@@ -225,7 +224,7 @@ func submitJDBatch(service JDImportService) gin.HandlerFunc {
 
 func marketProfile(service MarketService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result, err := service.ProfileCurrent(c, identity.UserID(c))
+		result, err := service.ProfileCurrent(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			handleError(c, err)
 			return
@@ -236,7 +235,7 @@ func marketProfile(service MarketService) gin.HandlerFunc {
 
 func jobCatalog(service TargetService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result, err := service.Catalog(c)
+		result, err := service.Catalog(c.Request.Context())
 		if err != nil {
 			handleError(c, err)
 			return
@@ -247,7 +246,7 @@ func jobCatalog(service TargetService) gin.HandlerFunc {
 
 func currentTarget(service TargetService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result, err := service.Current(c, identity.UserID(c))
+		result, err := service.Current(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			handleError(c, err)
 			return
@@ -263,7 +262,7 @@ func upsertCurrentTarget(service TargetService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "请求内容不是有效的目标岗位")
 			return
 		}
-		result, err := service.UpsertCurrent(c, identity.UserID(c), input)
+		result, err := service.UpsertCurrent(c.Request.Context(), identity.UserID(c), input)
 		if err != nil {
 			handleError(c, err)
 			return
@@ -296,7 +295,7 @@ func listJDs(service MarketService) gin.HandlerFunc {
 				}
 			}
 		}
-		result, err := service.ListCurrent(c, identity.UserID(c), market.ListFilter{
+		result, err := service.ListCurrent(c.Request.Context(), identity.UserID(c), market.ListFilter{
 			Statuses: statuses,
 			Query:    c.Query("q"), Company: c.Query("company"),
 			Ability: c.Query("ability"), Category: c.Query("category"),
@@ -335,7 +334,7 @@ func deleteJD(service MarketService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
 			return
 		}
-		if err := service.Delete(c, identity.UserID(c), jdID); err != nil {
+		if err := service.Delete(c.Request.Context(), identity.UserID(c), jdID); err != nil {
 			handleError(c, err)
 			return
 		}
@@ -350,7 +349,7 @@ func jdDetail(service MarketService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
 			return
 		}
-		result, err := service.Detail(c, identity.UserID(c), jdID)
+		result, err := service.Detail(c.Request.Context(), identity.UserID(c), jdID)
 		if err != nil {
 			handleError(c, err)
 			return
@@ -366,7 +365,7 @@ func retryJD(service MarketService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
 			return
 		}
-		result, err := service.Retry(c, identity.UserID(c), jdID)
+		result, err := service.Retry(c.Request.Context(), identity.UserID(c), jdID)
 		if err != nil {
 			handleError(c, err)
 			return
@@ -382,7 +381,7 @@ func retryAbilityReviews(service MarketService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
 			return
 		}
-		result, err := service.RetryAbilityReviews(c, identity.UserID(c), jdID)
+		result, err := service.RetryAbilityReviews(c.Request.Context(), identity.UserID(c), jdID)
 		if err != nil {
 			var quota *market.AbilityReviewQuotaError
 			if errors.As(err, &quota) {
@@ -403,7 +402,7 @@ func retryAbilityGrading(service MarketService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
 			return
 		}
-		result, err := service.RetryAbilityGrading(c, identity.UserID(c), jdID)
+		result, err := service.RetryAbilityGrading(c.Request.Context(), identity.UserID(c), jdID)
 		if err != nil {
 			handleError(c, err)
 			return
@@ -419,7 +418,7 @@ type modelConfigRequest struct {
 
 func getDeepSeekConfig(service ModelConfigService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result, err := service.Get(c, identity.UserID(c))
+		result, err := service.Get(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			handleError(c, err)
 			return
@@ -435,7 +434,7 @@ func saveDeepSeekConfig(service ModelConfigService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "模型配置格式不正确")
 			return
 		}
-		result, err := service.Save(c, identity.UserID(c), input.Model, input.APIKey)
+		result, err := service.Save(c.Request.Context(), identity.UserID(c), input.Model, input.APIKey)
 		if err != nil {
 			handleError(c, err)
 			return
@@ -451,7 +450,7 @@ func testDeepSeekConfig(service ModelConfigService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "模型配置格式不正确")
 			return
 		}
-		if err := service.Test(c, identity.UserID(c), input.Model, input.APIKey); err != nil {
+		if err := service.Test(c.Request.Context(), identity.UserID(c), input.Model, input.APIKey); err != nil {
 			handleError(c, err)
 			return
 		}
@@ -461,7 +460,7 @@ func testDeepSeekConfig(service ModelConfigService) gin.HandlerFunc {
 
 func deleteDeepSeekConfig(service ModelConfigService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := service.Delete(c, identity.UserID(c)); err != nil {
+		if err := service.Delete(c.Request.Context(), identity.UserID(c)); err != nil {
 			handleError(c, err)
 			return
 		}

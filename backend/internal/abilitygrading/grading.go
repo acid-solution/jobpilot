@@ -141,34 +141,12 @@ func (w *Worker) runOne(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	callContext, cancel := context.WithCancel(ctx)
-	callContext = modelusage.For(modelusage.Resource(callContext, job.TargetID, job.JobDescriptionID), job.UserID, job.ID, "jd_grading", "platform")
-	defer cancel()
-	heartbeatDone := make(chan error, 1)
-	go func() {
-		ticker := time.NewTicker(w.heartbeat)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-callContext.Done():
-				heartbeatDone <- nil
-				return
-			case <-ticker.C:
-				if err := w.repository.Heartbeat(callContext, job, w.lease); err != nil {
-					if callContext.Err() != nil && !errors.Is(err, ErrLeaseLost) {
-						heartbeatDone <- nil
-						return
-					}
-					heartbeatDone <- err
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	result, gradeErr := w.grader.GradeJDAbilities(callContext, w.apiKey, w.model, job)
-	cancel()
-	heartbeatErr := <-heartbeatDone
+	callContext := modelusage.For(modelusage.Resource(ctx, job.TargetID, job.JobDescriptionID), job.UserID, job.ID, "jd_grading", "platform")
+	result, gradeErr, heartbeatErr := workerpool.RunLeased(callContext, w.heartbeat,
+		func(heartbeatCtx context.Context) error { return w.repository.Heartbeat(heartbeatCtx, job, w.lease) },
+		func(workCtx context.Context) (Result, error) {
+			return w.grader.GradeJDAbilities(workCtx, w.apiKey, w.model, job)
+		})
 	if errors.Is(heartbeatErr, ErrLeaseLost) {
 		return heartbeatErr
 	}

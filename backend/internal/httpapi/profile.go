@@ -16,7 +16,7 @@ const maxProfileDocumentSize = 10 << 20
 
 func profileOverview(service ProfileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		value, err := service.GetOverview(c, identity.UserID(c))
+		value, err := service.GetOverview(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -26,7 +26,7 @@ func profileOverview(service ProfileService) gin.HandlerFunc {
 }
 func getProfileSettings(service ProfileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		value, err := service.GetSettings(c, identity.UserID(c))
+		value, err := service.GetSettings(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -41,7 +41,7 @@ func saveProfileSettings(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "必要信息格式不正确")
 			return
 		}
-		value, err := service.SaveSettings(c, identity.UserID(c), input)
+		value, err := service.SaveSettings(c.Request.Context(), identity.UserID(c), input)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -62,7 +62,7 @@ func setProfileCapabilityLevel(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "请选择 L0–L5 等级")
 			return
 		}
-		value, err := service.SetCapabilityLevel(c, identity.UserID(c), id, *input.Level)
+		value, err := service.SetCapabilityLevel(c.Request.Context(), identity.UserID(c), id, *input.Level)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -72,7 +72,7 @@ func setProfileCapabilityLevel(service ProfileService) gin.HandlerFunc {
 }
 func listProfileMaterials(service ProfileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		values, err := service.ListMaterials(c, identity.UserID(c))
+		values, err := service.ListMaterials(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -87,7 +87,7 @@ func createProfileMaterial(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "材料格式不正确")
 			return
 		}
-		value, err := service.CreateMaterial(c, identity.UserID(c), input)
+		value, err := service.CreateMaterial(c.Request.Context(), identity.UserID(c), input)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -146,7 +146,7 @@ func updateProfileMaterial(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "材料格式不正确")
 			return
 		}
-		value, err := service.UpdateMaterial(c, identity.UserID(c), id, input)
+		value, err := service.UpdateMaterial(c.Request.Context(), identity.UserID(c), id, input)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -160,7 +160,7 @@ func deleteProfileMaterial(service ProfileService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := service.DeleteMaterial(c, identity.UserID(c), id); err != nil {
+		if err := service.DeleteMaterial(c.Request.Context(), identity.UserID(c), id); err != nil {
 			writeProfileError(c, err)
 			return
 		}
@@ -173,7 +173,7 @@ func confirmProfileMaterial(service ProfileService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		value, err := service.ConfirmMaterial(c, identity.UserID(c), id)
+		value, err := service.ConfirmMaterial(c.Request.Context(), identity.UserID(c), id)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -188,7 +188,7 @@ func startProfileSession(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "练习设置格式不正确")
 			return
 		}
-		value, err := service.StartSession(c, identity.UserID(c), input)
+		value, err := service.StartSession(c.Request.Context(), identity.UserID(c), input)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -202,7 +202,7 @@ func getProfileSession(service ProfileService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		value, err := service.GetSession(c, identity.UserID(c), id)
+		value, err := service.GetSession(c.Request.Context(), identity.UserID(c), id)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -212,7 +212,7 @@ func getProfileSession(service ProfileService) gin.HandlerFunc {
 }
 func listProfileSessions(service ProfileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		values, err := service.ListSessions(c, identity.UserID(c))
+		values, err := service.ListSessions(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -226,7 +226,7 @@ func confirmProfileSession(service ProfileService) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		value, err := service.ConfirmSession(c, identity.UserID(c), id)
+		value, err := service.ConfirmSession(c.Request.Context(), identity.UserID(c), id)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -245,7 +245,7 @@ func saveProfileAnswer(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "回答格式不正确")
 			return
 		}
-		value, err := service.SaveAnswer(c, identity.UserID(c), id, input)
+		value, err := service.SaveAnswer(c.Request.Context(), identity.UserID(c), id, input)
 		if err != nil {
 			writeProfileError(c, err)
 			return
@@ -266,7 +266,7 @@ func submitProfileSession(service ProfileService) gin.HandlerFunc {
 			writeError(c, http.StatusBadRequest, "invalid_request", "回答格式不正确")
 			return
 		}
-		value, err := service.SubmitSession(c, identity.UserID(c), id, input.Answers)
+		value, err := service.SubmitSession(c.Request.Context(), identity.UserID(c), id, input.Answers)
 		if err != nil {
 			writeProfileError(c, err)
 			return

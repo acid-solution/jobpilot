@@ -10,7 +10,7 @@ import (
 
 func getProjectRecommendations(service ProjectRecommendationsService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		v, err := service.Get(c, identity.UserID(c))
+		v, err := service.Get(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			handleError(c, err)
 			return
@@ -27,7 +27,7 @@ func generateProjectRecommendations(service ProjectRecommendationsService) gin.H
 			writeError(c, http.StatusBadRequest, "invalid_request", "请求格式不正确")
 			return
 		}
-		v, err := service.Generate(c, identity.UserID(c), body.Adjustment)
+		v, err := service.Generate(c.Request.Context(), identity.UserID(c), body.Adjustment)
 		if err != nil {
 			handleError(c, err)
 			return
@@ -50,7 +50,7 @@ func selectProjectRecommendation(service ProjectRecommendationsService) gin.Hand
 			writeError(c, http.StatusBadRequest, "invalid_request", "报告或项目编号不正确")
 			return
 		}
-		v, err := service.Select(c, identity.UserID(c), id, body.ProjectID)
+		v, err := service.Select(c.Request.Context(), identity.UserID(c), id, body.ProjectID)
 		if err != nil {
 			handleError(c, err)
 			return

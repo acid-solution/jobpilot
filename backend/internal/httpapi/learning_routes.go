@@ -26,7 +26,7 @@ func routeResult(c *gin.Context, v learningroutes.View, err error) {
 	}
 	switch {
 	case errors.Is(err, learningroutes.ErrInvalid):
-		writeError(c, 400, "invalid_learning_route", strings.TrimPrefix(err.Error(),"invalid learning route: "))
+		writeError(c, 400, "invalid_learning_route", strings.TrimPrefix(err.Error(), "invalid learning route: "))
 	case errors.Is(err, learningroutes.ErrConflict):
 		writeError(c, 409, "learning_route_conflict", "路线版本已变化、任务正在运行或导入处理中，请刷新后重试")
 	case errors.Is(err, learningroutes.ErrInputsChanged):
@@ -40,14 +40,14 @@ func routeResult(c *gin.Context, v learningroutes.View, err error) {
 	}
 }
 func registerLearningRoutes(api *gin.RouterGroup, s LearningRoutesService) {
-	api.GET("/learning-route", func(c *gin.Context) { v, e := s.Get(c, identity.UserID(c)); routeResult(c, v, e) })
+	api.GET("/learning-route", func(c *gin.Context) { v, e := s.Get(c.Request.Context(), identity.UserID(c)); routeResult(c, v, e) })
 	api.POST("/learning-route/generate", func(c *gin.Context) {
 		var in learningroutes.GenerateInput
 		if e := c.ShouldBindJSON(&in); e != nil {
 			routeResult(c, learningroutes.View{}, learningroutes.ErrInvalid)
 			return
 		}
-		v, e := s.Generate(c, identity.UserID(c), in)
+		v, e := s.Generate(c.Request.Context(), identity.UserID(c), in)
 		routeResult(c, v, e)
 	})
 	api.PATCH("/learning-route/draft", func(c *gin.Context) {
@@ -56,7 +56,7 @@ func registerLearningRoutes(api *gin.RouterGroup, s LearningRoutesService) {
 			routeResult(c, learningroutes.View{}, learningroutes.ErrInvalid)
 			return
 		}
-		v, e := s.Edit(c, identity.UserID(c), in)
+		v, e := s.Edit(c.Request.Context(), identity.UserID(c), in)
 		routeResult(c, v, e)
 	})
 	api.POST("/learning-route/import", func(c *gin.Context) {

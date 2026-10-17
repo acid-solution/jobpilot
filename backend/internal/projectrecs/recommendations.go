@@ -167,7 +167,7 @@ type Job struct {
 type Repository interface {
 	Get(context.Context, uuid.UUID, string) (*Stored, *JobView, error)
 	Enqueue(context.Context, uuid.UUID, Snapshot, string) (JobView, error)
-	Select(context.Context, uuid.UUID, string, uuid.UUID, string) error
+	SelectWithContext(context.Context, uuid.UUID, string, uuid.UUID, string, string) error
 	RecoverExpired(context.Context) error
 	Claim(context.Context, time.Duration) (Job, error)
 	Heartbeat(context.Context, Job, time.Duration) error
@@ -391,13 +391,7 @@ func (s *Service) Select(ctx context.Context, userID, reportID uuid.UUID, projec
 	if ss.GoalSignature == "" {
 		return View{}, ErrNotFound
 	}
-	if scoped, ok := s.repo.(interface {
-		SelectWithContext(context.Context, uuid.UUID, string, uuid.UUID, string, string) error
-	}); ok {
-		err = scoped.SelectWithContext(ctx, userID, ss.GoalSignature, reportID, projectID, ProjectContextHash(ss.Input))
-	} else {
-		err = s.repo.Select(ctx, userID, ss.GoalSignature, reportID, projectID)
-	}
+	err = s.repo.SelectWithContext(ctx, userID, ss.GoalSignature, reportID, projectID, ProjectContextHash(ss.Input))
 	if err != nil {
 		return View{}, err
 	}

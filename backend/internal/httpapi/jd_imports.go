@@ -35,7 +35,7 @@ func startJDImport(c *gin.Context, service JDImportService, raw string, replacem
 		writeError(c, http.StatusServiceUnavailable, "jd_import_unavailable", "JD 导入服务未配置")
 		return
 	}
-	out, err := service.Start(c, identity.UserID(c), raw, replacement)
+	out, err := service.Start(c.Request.Context(), identity.UserID(c), raw, replacement)
 	if err != nil {
 		importError(c, err)
 		return
@@ -53,7 +53,7 @@ func registerJDImports(api *gin.RouterGroup, service JDImportService) {
 			writeError(c, 400, "invalid_request", "请输入待识别的文本")
 			return
 		}
-		out, err := service.Start(c, identity.UserID(c), input.Raw, input.Replacement)
+		out, err := service.Start(c.Request.Context(), identity.UserID(c), input.Raw, input.Replacement)
 		if err != nil {
 			importError(c, err)
 			return
@@ -61,7 +61,7 @@ func registerJDImports(api *gin.RouterGroup, service JDImportService) {
 		c.JSON(202, gin.H{"data": out})
 	})
 	api.GET("/jd-imports", func(c *gin.Context) {
-		out, err := service.List(c, identity.UserID(c))
+		out, err := service.List(c.Request.Context(), identity.UserID(c))
 		if err != nil {
 			importError(c, err)
 			return
@@ -74,7 +74,7 @@ func registerJDImports(api *gin.RouterGroup, service JDImportService) {
 			writeError(c, 400, "invalid_id", "导入编号无效")
 			return
 		}
-		out, err := service.Get(c, identity.UserID(c), id)
+		out, err := service.Get(c.Request.Context(), identity.UserID(c), id)
 		if err != nil {
 			importError(c, err)
 			return
@@ -90,7 +90,7 @@ func registerJDImports(api *gin.RouterGroup, service JDImportService) {
 			writeError(c, 400, "invalid_request", "请选择要导入的岗位")
 			return
 		}
-		out, err := service.Confirm(c, identity.UserID(c), id, in.IDs)
+		out, err := service.Confirm(c.Request.Context(), identity.UserID(c), id, in.IDs)
 		if err != nil {
 			importError(c, err)
 			return
@@ -103,7 +103,7 @@ func registerJDImports(api *gin.RouterGroup, service JDImportService) {
 			writeError(c, 400, "invalid_id", "导入编号无效")
 			return
 		}
-		out, err := service.Retry(c, identity.UserID(c), id)
+		out, err := service.Retry(c.Request.Context(), identity.UserID(c), id)
 		if err != nil {
 			importError(c, err)
 			return

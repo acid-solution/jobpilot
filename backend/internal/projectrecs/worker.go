@@ -3,12 +3,12 @@ package projectrecs
 import (
 	"context"
 	"errors"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"log/slog"
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/workerpool"
 	"github.com/google/uuid"
 )
@@ -46,35 +46,19 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	taskCtx, cancel := context.WithCancel(ctx)
-	taskCtx = modelusage.For(modelusage.Resource(taskCtx, job.TargetID, uuid.Nil), job.UserID, job.ID, "project_recommendation", "user")
-	defer cancel()
-	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() {
-		ticker := time.NewTicker(w.heartbeat)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-heartbeatCtx.Done():
-				done <- nil
-				return
-			case <-ticker.C:
-				if err := w.repo.Heartbeat(heartbeatCtx, job, w.lease); err != nil {
-					cancel()
-					done <- err
-					return
-				}
+	taskCtx := modelusage.For(modelusage.Resource(ctx, job.TargetID, uuid.Nil), job.UserID, job.ID, "project_recommendation", "user")
+	report, err, leaseErr := workerpool.RunLeased(taskCtx, w.heartbeat,
+		func(heartbeatCtx context.Context) error { return w.repo.Heartbeat(heartbeatCtx, job, w.lease) },
+		func(workCtx context.Context) (Report, error) {
+			creds, err := w.credentials.Credentials(workCtx, job.UserID)
+			if err != nil {
+				return Report{}, err
 			}
-		}
-	}()
-	creds, err := w.credentials.Credentials(taskCtx, job.UserID)
-	var report Report
-	if err == nil {
-		report, err = w.pipeline(taskCtx, job, creds)
+			return w.pipeline(workCtx, job, creds)
+		})
+	if ctx.Err() != nil {
+		return true, ctx.Err()
 	}
-	stopHeartbeat()
-	leaseErr := <-done
 	if errors.Is(leaseErr, ErrLeaseLost) {
 		slog.Warn("discard recommendation after lease loss", "job_id", job.ID)
 		return true, nil

@@ -95,6 +95,7 @@ type Capability struct {
 	UpdatedAt        *time.Time        `json:"updated_at,omitempty"`
 }
 type Overview struct {
+	Settings           Settings     `json:"-"`
 	MarketProfileReady bool         `json:"market_profile_ready"`
 	MaterialCount      int          `json:"material_count"`
 	ReadyMaterialCount int          `json:"ready_material_count"`

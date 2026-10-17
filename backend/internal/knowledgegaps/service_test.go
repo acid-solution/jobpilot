@@ -13,18 +13,26 @@ import (
 )
 
 type sourceStub struct {
-	target   target.Target
-	market   market.Profile
-	profile  profile.Overview
-	settings profile.Settings
+	targetReads, marketReads, profileReads int
+	target                                 target.Target
+	market                                 market.Profile
+	profile                                profile.Overview
+	settings                               profile.Settings
 }
 
-func (s *sourceStub) Current(context.Context, uuid.UUID) (target.Target, error) { return s.target, nil }
-func (s *sourceStub) ProfileCurrent(context.Context, uuid.UUID) (market.Profile, error) {
+func (s *sourceStub) Current(context.Context, uuid.UUID) (target.Target, error) {
+	s.targetReads++
+	return s.target, nil
+}
+func (s *sourceStub) ProfileForTarget(context.Context, uuid.UUID, uuid.UUID) (market.Profile, error) {
+	s.marketReads++
 	return s.market, nil
 }
 func (s *sourceStub) GetOverview(context.Context, uuid.UUID) (profile.Overview, error) {
-	return s.profile, nil
+	s.profileReads++
+	value := s.profile
+	value.Settings = s.settings
+	return value, nil
 }
 func (s *sourceStub) GetSettings(context.Context, uuid.UUID) (profile.Settings, error) {
 	return s.settings, nil
@@ -85,6 +93,35 @@ func initialReport(t *testing.T, s *Service, user uuid.UUID) View {
 		t.Fatalf("initial report: %+v %v", v, err)
 	}
 	return v
+}
+
+func TestSourceSnapshotIsSharedOnlyWithinOneRead(t *testing.T) {
+	s, sources, _, user := readyService()
+	var first string
+	read := func(ctx context.Context, ss Sources) error {
+		if ss.Comparison().Report == nil || ss.RequirementBasis() == "" {
+			t.Fatal("snapshot did not provide derived views")
+		}
+		if first == "" {
+			first = ss.Fingerprint
+		} else if first == ss.Fingerprint {
+			t.Fatal("a later read reused stale levels")
+		}
+		return nil
+	}
+	if err := s.WithSources(t.Context(), user, read); err != nil {
+		t.Fatal(err)
+	}
+	if sources.targetReads != 1 || sources.marketReads != 1 || sources.profileReads != 1 {
+		t.Fatalf("one snapshot repeated source reads: %+v", sources)
+	}
+	sources.profile.Capabilities[0].CurrentLevel++
+	if err := s.WithSources(t.Context(), user, read); err != nil {
+		t.Fatal(err)
+	}
+	if sources.targetReads != 2 || sources.marketReads != 2 || sources.profileReads != 2 {
+		t.Fatal("source snapshots leaked across requests")
+	}
 }
 
 func TestAnySourceLevelChangeAutomaticallyRefreshesExistingReport(t *testing.T) {

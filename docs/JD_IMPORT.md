@@ -32,6 +32,10 @@
 
 JD 响应的 `analysis` 包含阶段状态、错误、次数、原始技术要求、分类依据、`has_pending`、`next_poll_ms`。市场页以一次 JD 列表读取作为统一数据源，约两秒轮询活动任务；服务器可建议更长等待。页面重新可见或聚焦时重读，旧请求结果不能覆盖新状态。完成后列表、详情、画像进度和能力清单一起更新。前端通过查询获取完成状态，当前没有新增完成推送通道。
 
+列表的审核摘要、判级状态、能力等级和阶段结果按整批 JD 加载；非空列表固定执行 5 次数据库查询，空列表只执行基础查询，查询次数不随 JD 数量增长。列表和详情继续返回相同的数据结构与轮询状态。本轮未改变列表分页方式或移除详情字段。
+
+搜索词和状态筛选只从已加载的 JD 数据派生可见列表，不触发网络请求。主动刷新、活动任务轮询、页面重新可见或聚焦及 Agent 操作后的刷新仍读取最新数据；编辑和删除后的本地更新也立即应用当前筛选条件。
+
 目标匹配与十份相关 JD 门槛沿用原规则。不符合目标是正常筛选结果。后续报告仍需满足审核与判级就绪条件。
 
 ## 验证
@@ -39,5 +43,7 @@ JD 响应的 `analysis` 包含阶段状态、错误、次数、原始技术要�
 固定语料与可选真实模型测试位于 `backend/internal/storage/postgres/jd_corpus_live_test.go`。正常测试不发送外部请求；设置 `RUN_JD_CORPUS_LIVE=1` 才运行 50 段基础阶段评测，`RUN_JD_PIPELINE_LIVE=1` 复用其中样本执行实际 Worker、审核和判级。均应指向隔离 PostgreSQL，并通过本机忽略的 `.env.local` 或后续凭据提供器读取模型配置。结果见[评测记录](JD_PARSING_EVALUATION.md)。
 
 前端常规无头自动化使用 Playwright：设置 `RUN_MARKET_E2E=1` 后执行 `npm run test:e2e`，覆盖默认选择、非 JD、异步完成、过期响应和失败阶段重试。可用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定本机 Chrome/Edge，未指定时使用已安装的浏览器或 Playwright Chromium；CI 会安装 Chromium 后执行。测试通过本地假接口模拟 Worker 的状态变化，不调用 Computer Use 或模型服务。
+
+`market_batch_integration_test.go` 在隔离 PostgreSQL 中验证 1 份和 10 份 JD 均只执行 5 次查询，并核对列表、详情及账号隔离。前端浏览器测试同时验证搜索与筛选不重发 JD、画像和导入会话请求。
 
 线上验收脚本为 `frontend/scripts/verify-market-live.mjs`。显式设置 `RUN_MARKET_LIVE=1`、`JOBPILOT_BASE_URL`、`JOBPILOT_TEST_ACCOUNT_FILE`、`JOBPILOT_TEST_CORPUS_FILE` 后执行；账号必须是独立的 `example.test` 普通测试账号，语料使用已授权的固定评测文件。脚本实际操作线上页面，核对默认不选、多候选确认、后台完成后详情/画像/能力自动更新。默认保留数据；仅设置 `RESET_MARKET_SYNTHETIC_FIXTURE=1` 时重置该账号已创建且严格匹配的蓝鲸科技合成 JD，以复用同一份材料重新验证处理。凭据文件必须保存在仓库外，脚本不输出密码或令牌。

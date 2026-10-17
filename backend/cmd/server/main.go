@@ -122,7 +122,7 @@ func run() error {
 	profileService := profile.NewService(profileRepository, profileAssessor)
 	knowledgeGapsService := knowledgegaps.NewService(postgres.NewKnowledgeGapsRepository(database), targetService, marketService, profileService)
 	projectRepository := postgres.NewProjectRecommendationRepository(database)
-	projectService := projectrecs.NewService(projectRepository, targetService, marketService, profileService, knowledgeGapsService, modelConfigService)
+	projectService := projectrecs.NewService(projectRepository, knowledgeGapsService, profileService, modelConfigService)
 	projectWorker := projectrecs.NewWorker(projectRepository, projectService, modelConfigService, deepSeekClient,
 		projectrecs.NewGitHubClient("https://api.github.com", configuration.GitHubToken, nil), 2*time.Second)
 	var learningService *learningroutes.Service
@@ -134,7 +134,7 @@ func run() error {
 			return e
 		}
 		repo := postgres.NewLearningRouteRepository(database)
-		learningService = learningroutes.NewService(repo, projectService, knowledgeGapsService, profileService, modelConfigService, remote, configuration.StudyFlowWebURL)
+		learningService = learningroutes.NewService(repo, projectService, modelConfigService, remote, configuration.StudyFlowWebURL)
 		learningWorker = learningroutes.NewWorker(repo, learningService, modelConfigService, deepSeekClient)
 		learningAPI = learningService
 	}

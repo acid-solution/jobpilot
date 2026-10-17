@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 )
 
 type stagePayload struct {
@@ -82,53 +80,4 @@ func (r *AnalysisRepository) SaveStage(ctx context.Context, job jdanalysis.Job, 
 		}
 	}
 	return tx.Commit()
-}
-
-func (r *MarketRepository) loadJDAnalysis(ctx context.Context, jd *market.JobDescription) error {
-	jd.Analysis = market.AnalysisState{Version: sourceHash(jd.RawText), Stages: []market.AnalysisStage{}, NextPollMS: 2000, Warnings: []string{}}
-	rows, err := r.database.QueryContext(ctx, `SELECT stage,status,error_code,attempts,result FROM jd_analysis_stages WHERE job_description_id=$1 AND source_hash=$2 AND stage NOT LIKE 'extraction_window_%' ORDER BY CASE stage WHEN 'extraction' THEN 1 WHEN 'classification' THEN 2 WHEN 'classification_review' THEN 3 ELSE 4 END`, jd.ID, jd.Analysis.Version)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var stage market.AnalysisStage
-		var data []byte
-		if err = rows.Scan(&stage.Name, &stage.Status, &stage.ErrorCode, &stage.Attempts, &data); err != nil {
-			return err
-		}
-		jd.Analysis.Stages = append(jd.Analysis.Stages, stage)
-		if stage.Name == "extraction" {
-			var payload stagePayload
-			if json.Unmarshal(data, &payload) == nil {
-				jd.Analysis.Warnings = payload.Result.Warnings
-				jd.Analysis.Requirements = payload.Result.AbilityRequirements
-			}
-		}
-		if stage.Name == "ability_resolution" {
-			var payload stagePayload
-			if json.Unmarshal(data, &payload) == nil {
-				jd.Analysis.Warnings = append(jd.Analysis.Warnings, payload.Result.Warnings...)
-			}
-		}
-		if stage.Status == "succeeded" && (stage.Name == "classification" || stage.Name == "classification_review") {
-			var payload stagePayload
-			if json.Unmarshal(data, &payload) == nil {
-				jd.Analysis.Classifications = payload.Result.Classifications
-			}
-		}
-	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	jd.Analysis.HasPending = jd.JobStatus == "queued" || jd.JobStatus == "running" || (!jd.AbilityReview.Blocked && jd.AbilityReview.PendingCount > 0) || (!jd.AbilityGrading.Paused && !jd.AbilityReview.Blocked && jd.AbilityReview.FailedCount == 0 && (jd.AbilityGrading.Status == "queued" || jd.AbilityGrading.Status == "running"))
-	var automaticRetry bool
-	if err = r.database.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM analysis_jobs WHERE job_description_id=$1 AND status='failed' AND attempts<max_attempts)`, jd.ID).Scan(&automaticRetry); err != nil {
-		return err
-	}
-	jd.Analysis.HasPending = jd.Analysis.HasPending || automaticRetry
-	if jd.AbilityReview.NextAttemptAt != nil && jd.AbilityReview.NextAttemptAt.After(time.Now().Add(time.Minute)) {
-		jd.Analysis.NextPollMS = 30000
-	}
-	return nil
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jobPilotAPI, type JobDescription, type JDImportSession, type MarketProfile } from '../api'
 
 const emptyProfile: MarketProfile = { included_jd_count: 0, required_jd_count: 10, complete: false, ability_grading_pending_count: 0, ability_grading_failed_count: 0, abilities: [] }
@@ -16,7 +16,6 @@ export function marketPollDelay(items: JobDescription[], imports: JDImportSessio
 
 export function useMarketData(query: string, status: JobDescription['status'] | 'all') {
   const [records, setRecords] = useState<Record<string, JobDescription>>({})
-  const [visible, setVisible] = useState<string[]>([])
   const [profile, setProfile] = useState(emptyProfile)
   const [imports, setImports] = useState<JDImportSession[]>([])
   const [loading, setLoading] = useState(true)
@@ -29,8 +28,6 @@ export function useMarketData(query: string, status: JobDescription['status'] | 
       const [all, nextProfile, nextImports] = await Promise.all([jobPilotAPI.listJDs(), jobPilotAPI.getMarketProfile(), jobPilotAPI.listJDImports()])
       if (request !== sequence.current) return
       setRecords(Object.fromEntries(all.map(item => [item.id, item])))
-      const search = query.trim().toLocaleLowerCase()
-      setVisible(all.filter(item => (status === 'all' || item.status === status) && (!search || [item.title, item.company, item.primary_category, item.secondary_category, ...(item.ability_mentions ?? []).map(ability => ability.name)].join(' ').toLocaleLowerCase().includes(search))).map(item => item.id))
       setProfile(nextProfile)
       setImports(nextImports)
       setError('')
@@ -39,10 +36,14 @@ export function useMarketData(query: string, status: JobDescription['status'] | 
     } finally {
       if (request === sequence.current) setLoading(false)
     }
-  }, [query, status])
+  }, [])
   useEffect(() => { void reload(); return () => { sequence.current++ } }, [reload])
 
-  const all = Object.values(records)
+  const all = useMemo(() => Object.values(records), [records])
+  const items = useMemo(() => {
+    const search = query.trim().toLocaleLowerCase()
+    return all.filter(item => (status === "all" || item.status === status) && (!search || [item.title, item.company, item.primary_category, item.secondary_category, ...(item.ability_mentions ?? []).map(ability => ability.name)].join(" ").toLocaleLowerCase().includes(search)))
+  }, [all, query, status])
   const delay = marketPollDelay(all, imports, profile)
   useEffect(() => {
     if (delay === null) return
@@ -61,6 +62,6 @@ export function useMarketData(query: string, status: JobDescription['status'] | 
   }, [reload])
 
   const upsert = (item: JobDescription) => { sequence.current++; setRecords(current => ({ ...current, [item.id]: item })) }
-  const remove = (id: string) => { sequence.current++; setRecords(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id))); setVisible(current => current.filter(key => key !== id)) }
-  return { items: visible.map(id => records[id]).filter(Boolean), all, profile, imports, loading, error, setError, reload, upsert, remove }
+  const remove = (id: string) => { sequence.current++; setRecords(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id))) }
+  return { items, all, profile, imports, loading, error, setError, reload, upsert, remove }
 }

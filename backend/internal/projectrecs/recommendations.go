@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
@@ -141,6 +141,7 @@ type Input struct {
 	ExistingExperience string                    `json:"existing_experience"`
 }
 type Snapshot struct {
+	Sources            knowledgegaps.Sources
 	BusinessSourceHash string
 	TargetID           uuid.UUID
 	GoalSignature      string
@@ -178,18 +179,11 @@ type Repository interface {
 	Complete(context.Context, Job, Report, func(context.Context) error) error
 	Fail(context.Context, Job, string, bool) error
 }
-type TargetReader interface {
-	Current(context.Context, uuid.UUID) (target.Target, error)
-}
-type MarketReader interface {
-	ProfileCurrent(context.Context, uuid.UUID) (market.Profile, error)
-}
 type ProfileReader interface {
-	GetOverview(context.Context, uuid.UUID) (profile.Overview, error)
-	GetSettings(context.Context, uuid.UUID) (profile.Settings, error)
+	ListMaterials(context.Context, uuid.UUID) ([]profile.Material, error)
 }
 type GapReader interface {
-	Get(context.Context, uuid.UUID) (knowledgegaps.View, error)
+	WithSources(context.Context, uuid.UUID, func(context.Context, knowledgegaps.Sources) error) error
 }
 type ModelConfigReader interface {
 	Get(context.Context, uuid.UUID) (modelconfig.Metadata, error)
@@ -198,83 +192,53 @@ type ModelConfigReader interface {
 type Service struct {
 	preferences assistantmemory.Provider
 	repo        Repository
-	targets     TargetReader
-	market      MarketReader
 	profiles    ProfileReader
 	gaps        GapReader
 	models      ModelConfigReader
 }
 
-func NewService(repo Repository, targets TargetReader, market MarketReader, profiles ProfileReader, gaps GapReader, models ModelConfigReader) *Service {
-	return &Service{repo: repo, targets: targets, market: market, profiles: profiles, gaps: gaps, models: models}
+func NewService(repo Repository, gaps GapReader, profiles ProfileReader, models ModelConfigReader) *Service {
+	return &Service{repo: repo, gaps: gaps, profiles: profiles, models: models}
 }
 func (s *Service) SetPreferences(p assistantmemory.Provider) { s.preferences = p }
 
 func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, error) {
-	t, err := s.targets.Current(ctx, userID)
-	if errors.Is(err, target.ErrNotFound) {
-		return Snapshot{Readiness: knowledgegaps.Readiness{Code: "target_missing", Message: "请先设置求职目标"}}, nil
+	var result Snapshot
+	err := s.gaps.WithSources(ctx, userID, func(txCtx context.Context, sources knowledgegaps.Sources) error {
+		var e error
+		result, e = s.snapshotFromSources(txCtx, userID, sources)
+		return e
+	})
+	return result, err
+}
+
+func (s *Service) snapshotFromSources(ctx context.Context, userID uuid.UUID, sources knowledgegaps.Sources) (Snapshot, error) {
+	t, m, p, settings := sources.Target, sources.Market, sources.Profile, sources.Settings
+	if sources.GoalSignature == "" {
+		return Snapshot{Readiness: sources.Readiness, Sources: sources}, nil
 	}
-	if err != nil {
-		return Snapshot{}, err
-	}
-	g, err := s.gaps.Get(ctx, userID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	m, err := s.market.ProfileCurrent(ctx, userID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	p, err := s.profiles.GetOverview(ctx, userID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	settings, err := s.profiles.GetSettings(ctx, userID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	r := g.Readiness
-	if r.Code == "ready" && !p.Complete {
-		r.Code = "profile_incomplete"
-		r.Message = "请先完成用户画像"
-	}
-	if r.Code == "ready" && !m.Complete {
-		r.Code = "market_incomplete"
-		r.Message = "请先完成市场画像"
-	}
+	r := sources.Readiness
 	input := Input{Goal: t.Title, EmploymentType: t.EmploymentType, GraduationYear: t.GraduationYear,
 		IncludedJDCount: m.IncludedJDCount, ExistingExperience: strings.TrimSpace(settings.ExistingExperience)}
-	if basis, ok := s.gaps.(interface {
-		RequirementBasis(context.Context, uuid.UUID) (string, error)
-	}); ok {
-		input.RequirementBasis, err = basis.RequirementBasis(ctx, userID)
-		if err != nil {
-			return Snapshot{}, err
+	input.RequirementBasis = sources.RequirementBasis()
+	items, err := s.profiles.ListMaterials(ctx, userID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	type experience struct {
+		ID          uuid.UUID
+		Title, Text string
+	}
+	values := []experience{}
+	for _, item := range items {
+		if item.ConfirmedAt != nil {
+			values = append(values, experience{item.ID, item.Title, item.Text})
 		}
 	}
-	if materials, ok := s.profiles.(interface {
-		ListMaterials(context.Context, uuid.UUID) ([]profile.Material, error)
-	}); ok {
-		items, e := materials.ListMaterials(ctx, userID)
-		if e != nil {
-			return Snapshot{}, e
-		}
-		type experience struct {
-			ID          uuid.UUID
-			Title, Text string
-		}
-		values := []experience{}
-		for _, item := range items {
-			if item.ConfirmedAt != nil {
-				values = append(values, experience{item.ID, item.Title, item.Text})
-			}
-		}
-		sort.Slice(values, func(i, j int) bool { return values[i].ID.String() < values[j].ID.String() })
-		raw, _ := json.Marshal(values)
-		sum := sha256.Sum256(raw)
-		input.ExperienceBasis = hex.EncodeToString(sum[:])
-	}
+	sort.Slice(values, func(i, j int) bool { return values[i].ID.String() < values[j].ID.String() })
+	materialRaw, _ := json.Marshal(values)
+	materialSum := sha256.Sum256(materialRaw)
+	input.ExperienceBasis = hex.EncodeToString(materialSum[:])
 	if runes := []rune(input.ExistingExperience); len(runes) > 2500 {
 		input.ExistingExperience = string(runes[:2500])
 	}
@@ -291,8 +255,9 @@ func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, err
 		}
 		input.Directions = append(input.Directions, name)
 	}
-	sort.Slice(m.Abilities, func(i, j int) bool { return m.Abilities[i].CoveredJDCount > m.Abilities[j].CoveredJDCount })
-	for index, a := range m.Abilities {
+	marketAbilities := slices.Clone(m.Abilities)
+	sort.Slice(marketAbilities, func(i, j int) bool { return marketAbilities[i].CoveredJDCount > marketAbilities[j].CoveredJDCount })
+	for index, a := range marketAbilities {
 		if index >= 40 {
 			break
 		}
@@ -321,7 +286,7 @@ func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, err
 	businessRaw, _ := json.Marshal(struct {
 		ProfileInput       Input
 		MarketRequirements string
-	}{input, g.SourceFingerprint})
+	}{input, sources.Fingerprint})
 	businessSum := sha256.Sum256(businessRaw)
 	if s.preferences != nil {
 		prefs, e := s.preferences.Snapshot(ctx, userID, target.GoalSignature(t))
@@ -334,9 +299,9 @@ func (s *Service) Snapshot(ctx context.Context, userID uuid.UUID) (Snapshot, err
 	raw, _ := json.Marshal(struct {
 		ProfileInput       Input
 		MarketRequirements string
-	}{input, g.SourceFingerprint})
+	}{input, sources.Fingerprint})
 	hash := sha256.Sum256(raw)
-	return Snapshot{BusinessSourceHash: hex.EncodeToString(businessSum[:]), TargetID: t.ID, GoalSignature: knowledgegaps.GoalSignature(t), SourceHash: hex.EncodeToString(hash[:]), Input: input, Readiness: r}, nil
+	return Snapshot{Sources: sources, BusinessSourceHash: hex.EncodeToString(businessSum[:]), TargetID: t.ID, GoalSignature: knowledgegaps.GoalSignature(t), SourceHash: hex.EncodeToString(hash[:]), Input: input, Readiness: r}, nil
 }
 
 func (s *Service) validateJobInputs(ctx context.Context, job Job) error {
@@ -350,21 +315,28 @@ func (s *Service) validateJobInputs(ctx context.Context, job Job) error {
 	return nil
 }
 
-func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
-	ss, err := s.Snapshot(ctx, userID)
-	if err != nil {
-		return View{}, err
-	}
-	v := View{Readiness: ss.Readiness}
-	if current, ok := s.gaps.(interface {
-		CurrentComparison(context.Context, uuid.UUID) (knowledgegaps.View, error)
-	}); ok {
-		live, e := current.CurrentComparison(ctx, userID)
+// PlanningSnapshot reads the input and selected recommendation from the same
+// account snapshot. Route planning must not call Snapshot and Get separately.
+func (s *Service) PlanningSnapshot(ctx context.Context, userID uuid.UUID) (Snapshot, View, error) {
+	var ss Snapshot
+	var view View
+	err := s.gaps.WithSources(ctx, userID, func(txCtx context.Context, sources knowledgegaps.Sources) error {
+		var e error
+		ss, e = s.snapshotFromSources(txCtx, userID, sources)
 		if e != nil {
-			return View{}, e
+			return e
 		}
-		v.Knowledge = live.Report
-	}
+		view, e = s.getWithSnapshot(txCtx, userID, ss)
+		return e
+	})
+	return ss, view, err
+}
+func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
+	_, view, err := s.PlanningSnapshot(ctx, userID)
+	return view, err
+}
+func (s *Service) getWithSnapshot(ctx context.Context, userID uuid.UUID, ss Snapshot) (View, error) {
+	v := View{Readiness: ss.Readiness, Knowledge: ss.Sources.Comparison().Report}
 	if ss.GoalSignature == "" {
 		return v, nil
 	}

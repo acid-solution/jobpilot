@@ -37,6 +37,40 @@ const level = { common_levels: [2], recommended_level: 2, sample_count: 1, expli
 function profile(done) { return { included_jd_count: done ? 1 : 0, required_jd_count: 10, complete: false, ability_grading_pending_count: 0, ability_grading_failed_count: 0, abilities: done ? [{ ability_id: 'mysql', name: 'MySQL', category: '数据库', covered_jd_count: 1, evidences: [], target_level: 2, level_summary: level, preferred_level_summary: { ...level, sample_count: 0 } }] : [] } }
 const respond = (route, data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ data }) })
 
+test('search and status filters are local and keep the loaded records', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    const reads = { jds: 0, profile: 0, imports: 0 }
+    const reference = { ...completed, id: 'reference', company: '乙公司', status: 'reference', ability_mentions: [{ name: 'Python', evidence: 'Python' }] }
+    await page.route('**/api/v1/**', route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/v1/jds') { reads.jds++; return respond(route, [completed, reference]) }
+      if (path === '/api/v1/market-profile') { reads.profile++; return respond(route, profile(true)) }
+      if (path === '/api/v1/jd-imports') { reads.imports++; return respond(route, []) }
+      throw new Error(`Unexpected API ${path}`)
+    })
+    await page.goto(baseURL)
+    await page.locator('.jd-row').last().waitFor()
+    await page.getByLabel('搜索 JD').focus()
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    const baseline = { ...reads }
+    await page.getByLabel('搜索 JD').fill('甲')
+    await page.getByLabel('搜索 JD').pressSequentially('公司')
+    await page.locator('.jd-row').filter({ hasText: '甲公司' }).waitFor()
+    assert.equal(await page.locator('.jd-row').count(), 1)
+    await page.getByLabel('搜索 JD').fill('')
+    await page.getByLabel('按状态筛选').selectOption('reference')
+    await page.locator('.jd-row').filter({ hasText: '乙公司' }).waitFor()
+    assert.equal(await page.locator('.jd-row').count(), 1)
+    await page.getByLabel('按状态筛选').selectOption('all')
+    await page.getByLabel('搜索 JD').fill('MySQL')
+    await page.locator('.jd-row').filter({ hasText: '甲公司' }).waitFor()
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.deepEqual(reads, baseline)
+  } finally { await context.close() }
+})
+
 test('noisy material selection and background completion update the list, open detail, progress and abilities', { skip: !enabled, timeout: 30000 }, async () => {
   const context = await browser.newContext()
   try {

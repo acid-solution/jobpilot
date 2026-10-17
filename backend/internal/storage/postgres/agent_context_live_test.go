@@ -158,7 +158,7 @@ func TestLiveAgentContextEvaluation(t *testing.T) {
 	profiles := profile.NewService(NewProfileRepository(db), nil)
 	markets := market.NewService(NewMarketRepository(db), targets)
 	gaps := knowledgegaps.NewService(NewKnowledgeGapsRepository(db), targets, markets, profiles)
-	projects := projectrecs.NewService(NewProjectRecommendationRepository(db), targets, markets, profiles, gaps, nil)
+	projects := projectrecs.NewService(NewProjectRecommendationRepository(db), gaps, profiles, nil)
 	type row struct {
 		Case, Category, Mode             string
 		Repeat                           int

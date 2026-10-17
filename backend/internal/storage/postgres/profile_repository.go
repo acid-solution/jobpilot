@@ -9,7 +9,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/readiness"
 	"github.com/google/uuid"
 )
 
@@ -216,19 +218,22 @@ func (r *ProfileRepository) GetOverview(ctx context.Context, userID uuid.UUID) (
 	if err != nil {
 		return profile.Overview{}, err
 	}
-	result.Complete = marketReady && settings.WeeklyHours != nil && settings.ExpectedWeeks != nil && settings.ExistingExperience != "" && result.BlockingCount == 0
+	result.Settings = settings
+	result.Complete = readiness.ProfileComplete(marketReady, readiness.NecessaryInformation(settings.WeeklyHours, settings.ExpectedWeeks, settings.ExistingExperience), result.BlockingCount)
 	return result, nil
 }
 
 func (r *ProfileRepository) blockingRequirementCount(ctx context.Context, userID uuid.UUID, capabilities []profile.Capability) (int, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT requirement.id,requirement.required_count,option.ability_id,COALESCE(grade.level,0)
-		FROM job_description_ability_requirements requirement
-		JOIN job_descriptions jd ON jd.id=requirement.job_description_id
-		JOIN job_targets target ON target.id=jd.target_id AND target.is_current AND target.user_id=$1
-		JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id AND option.ability_id IS NOT NULL
-		LEFT JOIN jd_ability_option_levels grade ON grade.option_id=option.id
-		WHERE jd.user_id=$1 AND jd.status='included' AND COALESCE(grade.requirement_kind,requirement.requirement_kind)<>'preferred'
-		ORDER BY requirement.id`, userID)
+	rows, err := r.database.QueryContext(ctx, `SELECT requirement.id,requirement.required_count,option.ability_id,COALESCE(grade.level,0),grade.option_id IS NOT NULL,option.resolution_status
+ FROM job_description_ability_requirements requirement JOIN job_descriptions jd ON jd.id=requirement.job_description_id
+ JOIN job_targets target ON target.id=jd.target_id AND target.is_current AND target.user_id=$1
+ JOIN job_description_ability_requirement_options option ON option.requirement_id=requirement.id AND option.ability_id IS NOT NULL
+ LEFT JOIN jd_ability_level_jobs job ON job.job_description_id=jd.id
+ LEFT JOIN jd_ability_option_levels grade ON grade.option_id=option.id AND grade.ability_id=option.ability_id
+ AND job.result_fingerprint=jd_ability_grading_fingerprint(jd.id,$2)
+ WHERE jd.user_id=$1 AND jd.status='included' AND jd.validation_status='valid'
+ AND COALESCE(grade.requirement_kind,requirement.requirement_kind)<>'preferred'
+ ORDER BY requirement.id`, userID, abilitygrading.PromptVersion)
 	if err != nil {
 		return 0, err
 	}
@@ -237,39 +242,31 @@ func (r *ProfileRepository) blockingRequirementCount(ctx context.Context, userID
 	for _, a := range capabilities {
 		users[a.AbilityID] = a
 	}
-	type state struct {
-		needed    int
-		satisfied map[uuid.UUID]bool
-		unknown   bool
+	type group struct {
+		required int
+		options  []readiness.Option
 	}
-	groups := map[uuid.UUID]*state{}
+	groups := map[uuid.UUID]*group{}
 	for rows.Next() {
-		var id, abilityID uuid.UUID
+		var id, ability uuid.UUID
 		var required, level int
-		if err := rows.Scan(&id, &required, &abilityID, &level); err != nil {
+		var graded bool
+		var resolution string
+		if err := rows.Scan(&id, &required, &ability, &level, &graded, &resolution); err != nil {
 			return 0, err
 		}
-		g := groups[id]
-		if g == nil {
-			if required < 1 {
-				required = 1
-			}
-			g = &state{needed: required, satisfied: map[uuid.UUID]bool{}}
-			groups[id] = g
+		if groups[id] == nil {
+			groups[id] = &group{required: required}
 		}
-		a, ok := users[abilityID]
-		if !ok || !a.Assessed {
-			g.unknown = true
-		} else if level > 0 && a.CurrentLevel >= level {
-			g.satisfied[abilityID] = true
-		}
+		a := users[ability]
+		groups[id].options = append(groups[id].options, readiness.Option{AbilityID: ability, Resolved: resolution == "resolved", Assessed: a.Assessed, Graded: graded, CurrentLevel: a.CurrentLevel, RequiredLevel: level})
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 	count := 0
 	for _, g := range groups {
-		if len(g.satisfied) < g.needed && g.unknown {
+		if !readiness.Decidable(g.required, g.options) {
 			count++
 		}
 	}
@@ -339,7 +336,7 @@ func (r *ProfileRepository) GetCapability(ctx context.Context, userID, abilityID
 
 func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UUID) ([]profile.Capability, bool, error) {
 	var included int
-	err := r.database.QueryRowContext(ctx, `SELECT COUNT(*) FROM job_descriptions jd JOIN job_targets t ON t.id=jd.target_id WHERE jd.user_id=$1 AND t.user_id=$1 AND t.is_current AND jd.status='included'`, userID).Scan(&included)
+	err := r.database.QueryRowContext(ctx, `SELECT COUNT(*) FROM job_descriptions jd JOIN job_targets t ON t.id=jd.target_id WHERE jd.user_id=$1 AND t.user_id=$1 AND t.is_current AND jd.status='included' AND jd.validation_status='valid'`, userID).Scan(&included)
 	if err != nil {
 		return nil, false, err
 	}
@@ -354,7 +351,7 @@ func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UU
 			JOIN current_target target ON target.id=jd.target_id
 			LEFT JOIN jd_ability_level_assessments assessment
 			  ON assessment.job_description_id=jd.id AND assessment.ability_id=option.ability_id
-			WHERE jd.user_id=$1 AND jd.status='included' AND option.ability_id IS NOT NULL
+			WHERE jd.user_id=$1 AND jd.status='included' AND jd.validation_status='valid' AND option.ability_id IS NOT NULL
 			GROUP BY option.ability_id,jd.id
 		), level_counts AS (
 			SELECT ability_id,level,COUNT(*) AS count,ROW_NUMBER() OVER(PARTITION BY ability_id ORDER BY COUNT(*) DESC,level DESC) AS rank
@@ -402,7 +399,7 @@ func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UU
 		return nil, false, err
 	}
 	if len(ids) == 0 {
-		return values, included >= 10, nil
+		return values, included >= readiness.RequiredJDCount, nil
 	}
 	levelRows, err := r.database.QueryContext(ctx, `SELECT ability_id,level,description FROM ability_levels WHERE ability_id=ANY($1) ORDER BY ability_id,level`, uuidArray(ids))
 	if err != nil {
@@ -437,7 +434,7 @@ func (r *ProfileRepository) listCapabilities(ctx context.Context, userID uuid.UU
 		}
 	}
 	evidenceRows.Close()
-	return values, included >= 10, nil
+	return values, included >= readiness.RequiredJDCount, nil
 }
 
 func (r *ProfileRepository) CreateSession(ctx context.Context, userID uuid.UUID, value profile.Session) (profile.Session, error) {

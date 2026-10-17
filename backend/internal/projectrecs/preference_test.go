@@ -16,7 +16,7 @@ func (p *preferenceFixture) Snapshot(context.Context, uuid.UUID, string) (assist
 }
 func TestPreferenceChangesOnlyFutureGeneration(t *testing.T) {
 	sources := &workerSources{target: target.Target{ID: uuid.New(), EmploymentType: "internship"}, ready: "ready", marketHash: "unchanged", level: 2}
-	service := NewService(nil, sources, sources, sources, sources, nil)
+	service := NewService(nil, sources, sources, nil)
 	p := &preferenceFixture{s: assistantmemory.Snapshot{Memories: []assistantmemory.Memory{{Key: assistantmemory.Languages, Value: json.RawMessage(`["Go"]`), Revision: 1, Status: "active"}}}}
 	service.SetPreferences(p)
 	first, e := service.Snapshot(context.Background(), uuid.New())

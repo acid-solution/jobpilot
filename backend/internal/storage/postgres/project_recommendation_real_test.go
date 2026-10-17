@@ -46,7 +46,7 @@ func TestProjectRecommendationLiveReadiness(t *testing.T) {
 	markets := market.NewService(NewMarketRepository(db, AbilityReviewQuotaLimits{}), targets)
 	profiles := profile.NewService(NewProfileRepository(db), nil)
 	gaps := knowledgegaps.NewService(NewKnowledgeGapsRepository(db), targets, markets, profiles)
-	service := projectrecs.NewService(NewProjectRecommendationRepository(db), targets, markets, profiles, gaps, nil)
+	service := projectrecs.NewService(NewProjectRecommendationRepository(db), gaps, profiles, nil)
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT user_id FROM job_targets WHERE is_current`)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestProjectRecommendationLiveEndToEnd(t *testing.T) {
 	deepseekClient := deepseek.NewClient("https://api.deepseek.com", nil)
 	models := modelconfig.NewService(NewModelConfigRepository(db), cipher, deepseekClient)
 	repo := NewProjectRecommendationRepository(db)
-	service := projectrecs.NewService(repo, targets, markets, profiles, gaps, models)
+	service := projectrecs.NewService(repo, gaps, profiles, models)
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT user_id FROM job_targets WHERE is_current`)
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestProjectRecommendationLiveModelAndGitHub(t *testing.T) {
 	markets := market.NewService(NewMarketRepository(db, AbilityReviewQuotaLimits{}), targets)
 	profiles := profile.NewService(NewProfileRepository(db), nil)
 	gaps := knowledgegaps.NewService(NewKnowledgeGapsRepository(db), targets, markets, profiles)
-	service := projectrecs.NewService(NewProjectRecommendationRepository(db), targets, markets, profiles, gaps, nil)
+	service := projectrecs.NewService(NewProjectRecommendationRepository(db), gaps, profiles, nil)
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT user_id FROM job_targets WHERE is_current`)
 	if err != nil {
 		t.Fatal(err)

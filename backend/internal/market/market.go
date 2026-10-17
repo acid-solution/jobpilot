@@ -239,3 +239,8 @@ func (s *Service) ProfileCurrent(ctx context.Context, userID uuid.UUID) (Profile
 	}
 	return s.repository.ProfileByTarget(ctx, userID, currentTarget.ID)
 }
+
+// ProfileForTarget reuses an already authorized, account-scoped target snapshot.
+func (s *Service) ProfileForTarget(ctx context.Context, userID, targetID uuid.UUID) (Profile, error) {
+	return s.repository.ProfileByTarget(ctx, userID, targetID)
+}

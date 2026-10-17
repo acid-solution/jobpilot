@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/learningroutes"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/google/uuid"
 	"strings"
 	"testing"
@@ -84,13 +81,10 @@ func TestLearningRouteGenerationVersionAndFrozenImportIntegration(t *testing.T) 
 	if _, err = projects.Select(ctx, user, report.ID, "p1"); err != nil {
 		t.Fatal(err)
 	}
-	targets := target.NewService(NewTargetRepository(db))
-	markets := market.NewService(NewMarketRepository(db), targets)
-	gaps := knowledgegaps.NewService(NewKnowledgeGapsRepository(db), targets, markets, profiles)
 	repo := NewLearningRouteRepository(db)
 	remote := &routeRemote{}
 	creds := routeTestCredentials{}
-	service := learningroutes.NewService(repo, projects, gaps, profiles, creds, remote, "http://127.0.0.1:5174")
+	service := learningroutes.NewService(repo, projects, creds, remote, "http://127.0.0.1:5174")
 	model := &routeModel{}
 	worker := learningroutes.NewWorker(repo, service, creds, model)
 	cfg := learningroutes.Config{Project: learningroutes.PlanConfig{Mode: "sequence", WeeklyMinutes: 360}, Knowledge: learningroutes.PlanConfig{Mode: "sequence", WeeklyMinutes: 240}}

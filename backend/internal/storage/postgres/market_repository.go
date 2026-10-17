@@ -12,6 +12,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/readiness"
 	"github.com/google/uuid"
 )
 
@@ -121,18 +122,8 @@ func (r *MarketRepository) ListByTarget(
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	// The Agent transaction uses one connection. Finish this result set before
-	// querying each JD's review and grading details on that connection.
-	for i := range result {
-		if err := r.loadAbilityReviewSummary(ctx, &result[i]); err != nil {
-			return nil, err
-		}
-		if err := r.loadJDAbilityLevels(ctx, &result[i]); err != nil {
-			return nil, err
-		}
-		if err := r.loadJDAnalysis(ctx, &result[i]); err != nil {
-			return nil, err
-		}
+	if err := r.loadJDDetails(ctx, result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -180,62 +171,12 @@ func (r *MarketRepository) FindByID(ctx context.Context, userID, jdID uuid.UUID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return market.JobDescription{}, market.ErrNotFound
 	}
-	if err == nil {
-		err = r.loadAbilityReviewSummary(ctx, &result)
-	}
-	if err == nil {
-		err = r.loadJDAbilityLevels(ctx, &result)
-	}
-	if err == nil {
-		err = r.loadJDAnalysis(ctx, &result)
-	}
-	return result, err
-}
-
-func (r *MarketRepository) loadJDAbilityLevels(ctx context.Context, jd *market.JobDescription) error {
-	jd.AbilityLevels = []market.JDAbilityLevel{}
-	err := r.database.QueryRowContext(ctx, `SELECT job.status,COALESCE(job.last_error,''),
-		(jd.status<>'included' OR jd.validation_status<>'valid') AND job.status IN ('queued','failed'),
-		job.result_fingerprint<>jd_ability_grading_fingerprint(jd.id,$2)
-		FROM jd_ability_level_jobs job JOIN job_descriptions jd ON jd.id=job.job_description_id
-		WHERE job.job_description_id=$1`, jd.ID, abilitygrading.PromptVersion).Scan(
-		&jd.AbilityGrading.Status, &jd.AbilityGrading.Error, &jd.AbilityGrading.Paused, &jd.AbilityGrading.Stale)
-	if errors.Is(err, sql.ErrNoRows) {
-		jd.AbilityGrading.Status = "not_started"
-	} else if err != nil {
-		return err
-	}
-	rows, err := r.database.QueryContext(ctx, `SELECT assessment.ability_id,ability.name,assessment.level,
-		assessment.source,assessment.requirement_kind,assessment.evidence_quote,assessment.reason,assessment.confidence
-		FROM jd_ability_level_assessments assessment
-		JOIN abilities ability ON ability.id=assessment.ability_id
-		WHERE assessment.job_description_id=$1
-		ORDER BY ability.sort_order,CASE assessment.requirement_kind WHEN 'preferred' THEN 1 ELSE 0 END`, jd.ID)
 	if err != nil {
-		return err
+		return result, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var value market.JDAbilityLevel
-		if err := rows.Scan(&value.AbilityID, &value.Name, &value.Level, &value.Source, &value.RequirementKind,
-			&value.Evidence, &value.Reason, &value.Confidence); err != nil {
-			return err
-		}
-		jd.AbilityLevels = append(jd.AbilityLevels, value)
-	}
-	return rows.Err()
-}
-
-func (r *MarketRepository) loadAbilityReviewSummary(ctx context.Context, jd *market.JobDescription) error {
-	return r.database.QueryRowContext(ctx, `SELECT
-		COUNT(DISTINCT request.id) FILTER(WHERE request.status IN ('queued','running') OR (request.status='failed' AND request.attempts<request.max_attempts)),
-		COUNT(DISTINCT request.id) FILTER(WHERE request.status='failed' AND request.attempts>=request.max_attempts),
-		MIN(request.next_attempt_at) FILTER(WHERE request.status IN ('queued','failed') AND COALESCE(request.last_error,'')<>'platform_model_not_configured'),
-		COALESCE(BOOL_OR(request.last_error='platform_model_not_configured'),FALSE)
-		FROM job_description_ability_requirement_options option
-		JOIN job_description_ability_requirements requirement ON requirement.id=option.requirement_id
-		LEFT JOIN ability_review_requests request ON request.id=option.review_request_id
-		WHERE requirement.job_description_id=$1`, jd.ID).Scan(&jd.AbilityReview.PendingCount, &jd.AbilityReview.FailedCount, &jd.AbilityReview.NextAttemptAt, &jd.AbilityReview.Blocked)
+	items := []market.JobDescription{result}
+	err = r.loadJDDetails(ctx, items)
+	return items[0], err
 }
 
 func (r *MarketRepository) RetryAbilityReviews(ctx context.Context, userID, jdID uuid.UUID) (market.JobDescription, error) {
@@ -340,7 +281,7 @@ func (r *MarketRepository) RetryAnalysis(ctx context.Context, userID, jdID uuid.
 
 func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID uuid.UUID) (market.Profile, error) {
 	profile := market.Profile{
-		RequiredJDCount: 10,
+		RequiredJDCount: readiness.RequiredJDCount,
 		Abilities:       make([]market.AbilitySummary, 0),
 	}
 	if err := r.database.QueryRowContext(ctx, `

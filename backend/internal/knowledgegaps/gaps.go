@@ -14,6 +14,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/readiness"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/google/uuid"
 )
@@ -79,16 +80,8 @@ type Report struct {
 	Preferred   []Item    `json:"preferred"`
 	GeneratedAt time.Time `json:"generated_at"`
 }
-type Readiness struct {
-	Code                string `json:"code"`
-	Message             string `json:"message"`
-	IncludedJDCount     int    `json:"included_jd_count"`
-	PendingReviewCount  int    `json:"pending_review_count"`
-	FailedReviewCount   int    `json:"failed_review_count"`
-	PendingGradingCount int    `json:"pending_grading_count"`
-	FailedGradingCount  int    `json:"failed_grading_count"`
-	MissingAbilityCount int    `json:"missing_ability_count"`
-}
+type Readiness = readiness.State
+
 type View struct {
 	Report            *Report   `json:"report,omitempty"`
 	Stale             bool      `json:"stale"`
@@ -112,11 +105,10 @@ type TargetReader interface {
 	Current(context.Context, uuid.UUID) (target.Target, error)
 }
 type MarketReader interface {
-	ProfileCurrent(context.Context, uuid.UUID) (market.Profile, error)
+	ProfileForTarget(context.Context, uuid.UUID, uuid.UUID) (market.Profile, error)
 }
 type ProfileReader interface {
 	GetOverview(context.Context, uuid.UUID) (profile.Overview, error)
-	GetSettings(context.Context, uuid.UUID) (profile.Settings, error)
 }
 type Service struct {
 	repo     Repository
@@ -129,102 +121,101 @@ func NewService(repo Repository, targets TargetReader, market MarketReader, prof
 	return &Service{repo, targets, market, profiles}
 }
 
+// WithSources creates one consistent, request-scoped business snapshot. Callers
+// may derive multiple views within this transaction; nothing is cached across
+// requests or reused for the final validation of a background publication.
+func (s *Service) WithSources(ctx context.Context, user uuid.UUID, run func(context.Context, Sources) error) error {
+	return s.repo.WithinUserSnapshot(ctx, user, func(txCtx context.Context) error {
+		sources, err := s.load(txCtx, user)
+		if errors.Is(err, target.ErrNotFound) {
+			sources.Readiness = Readiness{Code: "target_missing", Message: "请先设置求职目标"}
+		} else if err != nil {
+			return err
+		}
+		return run(txCtx, sources)
+	})
+}
+
+func (ss Sources) Comparison() View {
+	v := View{Readiness: ss.Readiness, SourceFingerprint: ss.Fingerprint}
+	if ss.Readiness.Code == "ready" {
+		report := Build(ss.Target.ID, ss.Requirements, ss.Market.Abilities, ss.Profile.Capabilities)
+		report.GeneratedAt = time.Time{}
+		v.Report = &report
+	}
+	return v
+}
+
 // CurrentComparison computes live conclusions without requiring or changing a
 // saved report. Planning and recommendation summaries use this same rule engine.
 func (s *Service) CurrentComparison(ctx context.Context, user uuid.UUID) (View, error) {
 	var view View
-	err := s.repo.WithinUserSnapshot(ctx, user, func(snapshotCtx context.Context) error {
-		ss, err := s.load(snapshotCtx, user)
-		if err != nil {
-			return err
-		}
-		view = View{Readiness: ss.readiness, SourceFingerprint: ss.hash}
-		if ss.readiness.Code == "ready" {
-			report := Build(ss.target.ID, ss.requirements, ss.market.Abilities, ss.profile.Capabilities)
-			report.GeneratedAt = time.Time{}
-			view.Report = &report
-		}
+	err := s.WithSources(ctx, user, func(_ context.Context, ss Sources) error {
+		view = ss.Comparison()
 		return nil
 	})
 	return view, err
 }
 
-// RequirementBasis excludes assessed levels while retaining the complete JD
-// requirement set and its evidence. A level-only update is not a new project topic.
-func (s *Service) RequirementBasis(ctx context.Context, user uuid.UUID) (string, error) {
-	var hash string
-	err := s.repo.WithinUserSnapshot(ctx, user, func(txCtx context.Context) error {
-		ss, e := s.load(txCtx, user)
-		if e != nil {
-			return e
+// RequirementBasis excludes assessed levels without loading sources again.
+func (ss Sources) RequirementBasis() string {
+	type candidate struct {
+		ID             uuid.UUID
+		Name, Evidence string
+	}
+	type requirement struct {
+		ID, JDID                 uuid.UUID
+		Operator, Kind, Evidence string
+		Count                    int
+		Options                  []candidate
+	}
+	values := []requirement{}
+	for _, q := range ss.Requirements {
+		v := requirement{ID: q.ID, JDID: q.JDID, Operator: q.Operator, Kind: q.Kind, Evidence: q.Evidence, Count: q.RequiredCount, Options: []candidate{}}
+		for _, o := range q.Options {
+			v.Options = append(v.Options, candidate{o.AbilityID, o.Name, o.Evidence})
 		}
-		type candidate struct {
-			ID             uuid.UUID
-			Name, Evidence string
-		}
-		type requirement struct {
-			ID, JDID                 uuid.UUID
-			Operator, Kind, Evidence string
-			Count                    int
-			Options                  []candidate
-		}
-		values := []requirement{}
-		for _, q := range ss.requirements {
-			v := requirement{ID: q.ID, JDID: q.JDID, Operator: q.Operator, Kind: q.Kind, Evidence: q.Evidence, Count: q.RequiredCount, Options: []candidate{}}
-			for _, o := range q.Options {
-				v.Options = append(v.Options, candidate{o.AbilityID, o.Name, o.Evidence})
-			}
-			sort.Slice(v.Options, func(i, j int) bool {
-				return v.Options[i].ID.String()+v.Options[i].Evidence < v.Options[j].ID.String()+v.Options[j].Evidence
-			})
-			values = append(values, v)
-		}
-		sort.Slice(values, func(i, j int) bool { return values[i].ID.String() < values[j].ID.String() })
-		raw, _ := json.Marshal(values)
-		sum := sha256.Sum256(raw)
-		hash = hex.EncodeToString(sum[:])
-		return nil
-	})
-	return hash, err
+		sort.Slice(v.Options, func(i, j int) bool {
+			return v.Options[i].ID.String()+v.Options[i].Evidence < v.Options[j].ID.String()+v.Options[j].Evidence
+		})
+		values = append(values, v)
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].ID.String() < values[j].ID.String() })
+	raw, _ := json.Marshal(values)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
-type snapshot struct {
-	target        target.Target
-	market        market.Profile
-	profile       profile.Overview
-	settings      profile.Settings
-	requirements  []Requirement
-	readiness     Readiness
-	hash          string
-	goalSignature string
+type Sources struct {
+	Target        target.Target
+	Market        market.Profile
+	Profile       profile.Overview
+	Settings      profile.Settings
+	Requirements  []Requirement
+	Readiness     Readiness
+	Fingerprint   string
+	GoalSignature string
 }
 
-func (s *Service) load(ctx context.Context, userID uuid.UUID) (snapshot, error) {
+func (s *Service) load(ctx context.Context, userID uuid.UUID) (Sources, error) {
 	t, err := s.targets.Current(ctx, userID)
 	if err != nil {
-		return snapshot{}, err
+		return Sources{}, err
 	}
-	m, err := s.market.ProfileCurrent(ctx, userID)
+	m, err := s.market.ProfileForTarget(ctx, userID, t.ID)
 	if err != nil {
-		return snapshot{}, err
+		return Sources{}, err
 	}
 	p, err := s.profiles.GetOverview(ctx, userID)
 	if err != nil {
-		return snapshot{}, err
+		return Sources{}, err
 	}
-	settings, err := s.profiles.GetSettings(ctx, userID)
-	if err != nil {
-		return snapshot{}, err
-	}
+	settings := p.Settings
 	reqs, err := s.repo.LoadRequirements(ctx, userID, t.ID)
 	if err != nil {
-		return snapshot{}, err
+		return Sources{}, err
 	}
 	r := Readiness{Code: "ready", IncludedJDCount: m.IncludedJDCount, PendingGradingCount: m.AbilityGradingPendingCount, FailedGradingCount: m.AbilityGradingFailedCount}
-	if m.IncludedJDCount < 10 {
-		r.Code = "market_incomplete"
-		r.Message = "请先收集至少 10 份计入市场画像的 JD"
-	}
 	missingGradeJDs := map[uuid.UUID]bool{}
 	for _, q := range reqs {
 		for _, o := range q.Options {
@@ -242,18 +233,6 @@ func (s *Service) load(ctx context.Context, userID uuid.UUID) (snapshot, error) 
 	if len(missingGradeJDs) > r.PendingGradingCount {
 		r.PendingGradingCount = len(missingGradeJDs)
 	}
-	if r.Code == "ready" && (r.PendingReviewCount > 0 || r.FailedReviewCount > 0) {
-		r.Code = "ability_review_pending"
-		r.Message = "相关能力目录审核尚未完成，请在 JD 详情中重试失败项"
-	}
-	if r.Code == "ready" && (r.PendingGradingCount > 0 || r.FailedGradingCount > 0) {
-		r.Code = "grading_pending"
-		r.Message = "JD 能力判级尚未完成，请在市场画像中查看或重试"
-	}
-	if r.Code == "ready" && (settings.WeeklyHours == nil || settings.ExpectedWeeks == nil || settings.ExistingExperience == "") {
-		r.Code = "profile_incomplete"
-		r.Message = "请先补齐用户画像的必要信息"
-	}
 	ability := map[uuid.UUID]profile.Capability{}
 	for _, a := range p.Capabilities {
 		ability[a.AbilityID] = a
@@ -266,10 +245,7 @@ func (s *Service) load(ctx context.Context, userID uuid.UUID) (snapshot, error) 
 			r.MissingAbilityCount++
 		}
 	}
-	if r.Code == "ready" && r.MissingAbilityCount > 0 {
-		r.Code = "profile_incomplete"
-		r.Message = "请先评估当前岗位要求所需的能力"
-	}
+	r = readiness.Evaluate(r, readiness.NecessaryInformation(settings.WeeklyHours, settings.ExpectedWeeks, settings.ExistingExperience))
 	// Only sources that can change a gap conclusion enter this fingerprint.
 	type level struct {
 		ID       uuid.UUID
@@ -308,7 +284,7 @@ func (s *Service) load(ctx context.Context, userID uuid.UUID) (snapshot, error) 
 		Levels       []level
 	}{t.ID, marketAbilities, requirements, levels})
 	h := sha256.Sum256(value)
-	return snapshot{t, m, p, settings, reqs, r, hex.EncodeToString(h[:]), goalSignature}, nil
+	return Sources{t, m, p, settings, reqs, r, hex.EncodeToString(h[:]), goalSignature}, nil
 }
 
 func sortedSourceValues[T any](values []T, key func(T) string) []T {
@@ -323,26 +299,12 @@ func signature(t target.Target) string { return target.GoalSignature(t) }
 // A target row is updated in place, so its UUID alone is not a stable goal key.
 func GoalSignature(t target.Target) string { return signature(t) }
 func groupDecidable(q Requirement, abilities map[uuid.UUID]profile.Capability) bool {
-	needed := q.RequiredCount
-	if needed < 1 {
-		needed = 1
-	}
-	satisfied := map[uuid.UUID]bool{}
-	unknown := false
+	options := make([]readiness.Option, 0, len(q.Options))
 	for _, o := range q.Options {
-		if o.Resolution != "resolved" {
-			continue
-		}
-		a, ok := abilities[o.AbilityID]
-		if !ok || !a.Assessed {
-			unknown = true
-			continue
-		}
-		if o.Graded && a.CurrentLevel >= o.Level {
-			satisfied[o.AbilityID] = true
-		}
+		a := abilities[o.AbilityID]
+		options = append(options, readiness.Option{AbilityID: o.AbilityID, Resolved: o.Resolution == "resolved", Assessed: a.Assessed, Graded: o.Graded, CurrentLevel: a.CurrentLevel, RequiredLevel: o.Level})
 	}
-	return len(satisfied) >= needed || !unknown
+	return readiness.Decidable(q.RequiredCount, options)
 }
 func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
 	var view, previous View
@@ -355,17 +317,17 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (View, error) {
 			}
 			return err
 		}
-		stored, err := s.repo.Get(snapshotCtx, userID, ss.goalSignature)
+		stored, err := s.repo.Get(snapshotCtx, userID, ss.GoalSignature)
 		if err != nil {
 			return err
 		}
-		view = View{Readiness: ss.readiness, SourceFingerprint: ss.hash}
+		view = View{Readiness: ss.Readiness, SourceFingerprint: ss.Fingerprint}
 		if stored == nil {
 			return nil
 		}
 		view.Report = &stored.Report
-		view.Stale = stored.SourceHash != ss.hash || ss.readiness.Code != "ready"
-		if !view.Stale || ss.readiness.Code != "ready" {
+		view.Stale = stored.SourceHash != ss.Fingerprint || ss.Readiness.Code != "ready"
+		if !view.Stale || ss.Readiness.Code != "ready" {
 			return nil
 		}
 		previous = view
@@ -393,8 +355,8 @@ func (s *Service) Analyze(ctx context.Context, userID uuid.UUID) (View, error) {
 			}
 			return err
 		}
-		if ss.readiness.Code != "ready" {
-			view.Readiness = ss.readiness
+		if ss.Readiness.Code != "ready" {
+			view.Readiness = ss.Readiness
 			return ErrNotReady
 		}
 		view, err = s.buildAndSave(snapshotCtx, userID, ss)
@@ -403,13 +365,13 @@ func (s *Service) Analyze(ctx context.Context, userID uuid.UUID) (View, error) {
 	return view, err
 }
 
-func (s *Service) buildAndSave(ctx context.Context, userID uuid.UUID, ss snapshot) (View, error) {
-	report := Build(ss.target.ID, ss.requirements, ss.market.Abilities, ss.profile.Capabilities)
+func (s *Service) buildAndSave(ctx context.Context, userID uuid.UUID, ss Sources) (View, error) {
+	report := Build(ss.Target.ID, ss.Requirements, ss.Market.Abilities, ss.Profile.Capabilities)
 	report.GeneratedAt = time.Now().UTC()
-	if err := s.repo.Save(ctx, userID, ss.target.ID, ss.goalSignature, ss.hash, report); err != nil {
+	if err := s.repo.Save(ctx, userID, ss.Target.ID, ss.GoalSignature, ss.Fingerprint, report); err != nil {
 		return View{}, err
 	}
-	return View{Report: &report, Readiness: ss.readiness, SourceFingerprint: ss.hash}, nil
+	return View{Report: &report, Readiness: ss.Readiness, SourceFingerprint: ss.Fingerprint}, nil
 }
 
 func Build(targetID uuid.UUID, reqs []Requirement, marketAbilities []market.AbilitySummary, capabilities []profile.Capability) Report {

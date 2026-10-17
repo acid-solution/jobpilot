@@ -60,7 +60,7 @@ func recommendationRaceFixture(t *testing.T, db *sql.DB, ctx context.Context) (*
 	markets := market.NewService(NewMarketRepository(db), targets)
 	gaps := knowledgegaps.NewService(NewKnowledgeGapsRepository(db), targets, markets, profiles)
 	repo := NewProjectRecommendationRepository(db)
-	s := projectrecs.NewService(repo, targets, markets, profiles, gaps, nil)
+	s := projectrecs.NewService(repo, gaps, profiles, nil)
 	ss, err := s.Snapshot(ctx, user)
 	if err != nil || ss.Readiness.Code != "ready" {
 		t.Fatalf("fixture not ready: %+v %v", ss.Readiness, err)

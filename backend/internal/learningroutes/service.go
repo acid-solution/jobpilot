@@ -5,27 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"sort"
 	"strings"
 
+	"github.com/LeoninCS/jobpilot-next/backend/internal/assistantmemory"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/projectrecs"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/readiness"
 	"github.com/google/uuid"
 )
 
 type Projects interface {
-	Snapshot(context.Context, uuid.UUID) (projectrecs.Snapshot, error)
-	Get(context.Context, uuid.UUID) (projectrecs.View, error)
+	PlanningSnapshot(context.Context, uuid.UUID) (projectrecs.Snapshot, projectrecs.View, error)
 }
-type Gaps interface {
-	CurrentComparison(context.Context, uuid.UUID) (knowledgegaps.View, error)
-}
-type Profiles interface {
-	GetOverview(context.Context, uuid.UUID) (profile.Overview, error)
-}
+
 type Credentials interface {
 	Credentials(context.Context, uuid.UUID) (modelconfig.Credentials, error)
 }
@@ -33,8 +27,6 @@ type Service struct {
 	preferences assistantmemory.Provider
 	repo        Repository
 	projects    Projects
-	gaps        Gaps
-	profiles    Profiles
 	credentials Credentials
 	remote      Remote
 	webURL      string
@@ -45,43 +37,23 @@ func (s *Service) GetImport(ctx context.Context, user, id uuid.UUID) (ImportRequ
 	return s.repo.FindImport(ctx, user, id)
 }
 
-func NewService(repo Repository, projects Projects, gaps Gaps, profiles Profiles, creds Credentials, remote Remote, web string) *Service {
-	return &Service{repo: repo, projects: projects, gaps: gaps, profiles: profiles, credentials: creds, remote: remote, webURL: strings.TrimRight(web, "/")}
+func NewService(repo Repository, projects Projects, creds Credentials, remote Remote, web string) *Service {
+	return &Service{repo: repo, projects: projects, credentials: creds, remote: remote, webURL: strings.TrimRight(web, "/")}
 }
 
 func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error) {
-	source, err := s.projects.Snapshot(ctx, user)
+	source, projects, err := s.projects.PlanningSnapshot(ctx, user)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	source.Input.Preferences = nil
-	result := Snapshot{TargetID: source.TargetID, GoalSignature: source.GoalSignature, Readiness: source.Readiness, Input: Input{Profile: source.Input}, Preparation: Preparation{RequiredJDCount: 10, IncludedJDCount: source.Input.IncludedJDCount}}
+	// The preparation API's legacy analysis_ready field represents the separate
+	// review/grading step; readiness.analysis_ready also requires the user profile.
+	result := Snapshot{TargetID: source.TargetID, GoalSignature: source.GoalSignature, Readiness: source.Readiness, Input: Input{Profile: source.Input}, Preparation: Preparation{RequiredJDCount: readiness.RequiredJDCount, IncludedJDCount: source.Input.IncludedJDCount, MarketComplete: source.Readiness.MarketComplete, ProfileComplete: source.Readiness.ProfileComplete, AnalysisReady: source.Readiness.ReviewsAndGradingComplete}}
 	if source.GoalSignature == "" {
 		return result, nil
 	}
-	overview, err := s.profiles.GetOverview(ctx, user)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	result.Preparation.MarketComplete = overview.MarketProfileReady && source.Input.IncludedJDCount >= result.Preparation.RequiredJDCount
-	result.Preparation.ProfileComplete = overview.Complete && source.Input.WeeklyHours > 0 && source.Input.ExpectedWeeks > 0 && source.Input.ExistingExperience != ""
-	result.Preparation.AnalysisReady = result.Preparation.MarketComplete && analysisReady(source.Readiness)
-	if result.Readiness.Code == "ready" && !result.Preparation.MarketComplete {
-		result.Readiness.Code, result.Readiness.Message = "market_incomplete", "请先完成市场画像采集"
-	}
-	if result.Readiness.Code == "ready" && !result.Preparation.ProfileComplete {
-		result.Readiness.Code, result.Readiness.Message = "profile_incomplete", "请先完成用户画像与必要信息"
-	}
-	if result.Readiness.Code == "ready" && !result.Preparation.AnalysisReady {
-		result.Readiness.Code, result.Readiness.Message = "grading_pending", "请先等待相关 JD 判级完成"
-		if source.Readiness.PendingReviewCount > 0 || source.Readiness.FailedReviewCount > 0 {
-			result.Readiness.Code, result.Readiness.Message = "ability_review_pending", "请先完成相关能力目录审核"
-		}
-	}
-	projects, err := s.projects.Get(ctx, user)
-	if err != nil {
-		return Snapshot{}, err
-	}
+	overview := source.Sources.Profile
 	if projects.Report == nil || projects.SelectedProjectID == "" {
 		if result.Readiness.Code == "ready" {
 			result.Readiness.Code, result.Readiness.Message = "project_missing", "请先生成项目推荐并选择一个项目"
@@ -100,21 +72,7 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 	}
 	result.Preparation.ProjectSelected = true
 	result.Preparation.ProjectNeedsReview = projects.SelectionNeedsReview
-	gaps, err := s.gaps.CurrentComparison(ctx, user)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	result.Preparation.AnalysisReady = result.Preparation.AnalysisReady && analysisReady(gaps.Readiness)
-	if result.Readiness.Code == "ready" && gaps.Readiness.Code != "ready" {
-		result.Readiness = gaps.Readiness
-	}
-	if result.Readiness.Code == "ready" && !result.Preparation.AnalysisReady {
-		result.Readiness = gaps.Readiness
-		result.Readiness.Code, result.Readiness.Message = "grading_pending", "请先等待相关 JD 判级完成"
-		if gaps.Readiness.PendingReviewCount > 0 || gaps.Readiness.FailedReviewCount > 0 {
-			result.Readiness.Code, result.Readiness.Message = "ability_review_pending", "请先完成相关能力目录审核"
-		}
-	}
+	gaps := knowledgegaps.View{Readiness: source.Readiness, SourceFingerprint: source.Sources.Fingerprint, Report: projects.Knowledge}
 	if result.Readiness.Code == "ready" && projects.SelectionNeedsReview {
 		result.Readiness.Code, result.Readiness.Message = "project_stale", "项目依据已变化，请先重新核对项目推荐"
 	}
@@ -137,10 +95,6 @@ func (s *Service) snapshot(ctx context.Context, user uuid.UUID) (Snapshot, error
 	return result, nil
 }
 
-func analysisReady(r knowledgegaps.Readiness) bool {
-	return r.Code != "ability_review_pending" && r.Code != "grading_pending" &&
-		r.PendingReviewCount == 0 && r.FailedReviewCount == 0 && r.PendingGradingCount == 0 && r.FailedGradingCount == 0
-}
 func (s *Service) Get(ctx context.Context, user uuid.UUID) (View, error) {
 	var result View
 	err := s.repo.WithinUserTransaction(ctx, user, func(txCtx context.Context) error {

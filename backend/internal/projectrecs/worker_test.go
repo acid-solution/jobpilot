@@ -19,6 +19,7 @@ type workerSources struct {
 	level      int
 	marketHash string
 	ready      string
+	reads      int
 }
 
 func (s *workerSources) Current(context.Context, uuid.UUID) (target.Target, error) {
@@ -34,9 +35,6 @@ func (s *workerSources) GetSettings(context.Context, uuid.UUID) (profile.Setting
 	hours, weeks := 12, 8
 	return profile.Settings{WeeklyHours: &hours, ExpectedWeeks: &weeks, ExistingExperience: "Go 服务开发"}, nil
 }
-func (s *workerSources) Get(context.Context, uuid.UUID) (knowledgegaps.View, error) {
-	return knowledgegaps.View{Readiness: knowledgegaps.Readiness{Code: s.ready}, SourceFingerprint: s.marketHash}, nil
-}
 
 type completionRepository struct {
 	Repository  // Unused pipeline methods must not be called in the empty-result path.
@@ -51,6 +49,9 @@ type completionRepository struct {
 
 func (r *completionRepository) Claim(context.Context, time.Duration) (Job, error)   { return r.job, nil }
 func (r *completionRepository) Heartbeat(context.Context, Job, time.Duration) error { return nil }
+func (r *completionRepository) Get(context.Context, uuid.UUID, string) (*Stored, *JobView, error) {
+	return nil, nil, nil
+}
 func (r *completionRepository) Complete(ctx context.Context, _ Job, _ Report, validate func(context.Context) error) error {
 	if r.beforeSave != nil {
 		r.beforeSave()
@@ -76,13 +77,30 @@ func (workerCredentials) Credentials(context.Context, uuid.UUID) (modelconfig.Cr
 	return modelconfig.Credentials{APIKey: "test", Model: "test"}, nil
 }
 
+func TestPlanningReadSharesSourcesWithoutCachingAcrossRequests(t *testing.T) {
+	sources := &workerSources{target: target.Target{ID: uuid.New(), EmploymentType: "internship"}, level: 2, marketHash: "market-1", ready: "ready"}
+	service := NewService(&completionRepository{}, sources, sources, nil)
+	user := uuid.New()
+	for want := 1; want <= 2; want++ {
+		ss, view, err := service.PlanningSnapshot(t.Context(), user)
+		if err != nil || sources.reads != want {
+			t.Fatalf("planning read loaded sources %d times, want %d: %v", sources.reads, want, err)
+		}
+		if view.Knowledge == nil || ss.Input.UserAbilities[0].Level != sources.level || ss.Sources.Fingerprint != sources.marketHash {
+			t.Fatalf("planning read did not derive its views from current sources: %+v", ss)
+		}
+		sources.level++
+		sources.marketHash = "market-2"
+	}
+}
+
 func TestWorkerRevalidatesInputsDuringCompletion(t *testing.T) {
 	for _, change := range []string{"none", "user_level", "market_level", "target", "readiness", "database_failure", "lease_lost"} {
 		t.Run(change, func(t *testing.T) {
 			ctx := context.Background()
 			sources := &workerSources{target: target.Target{ID: uuid.New(), EmploymentType: "internship"}, level: 2, marketHash: "market-1", ready: "ready"}
 			r := &completionRepository{}
-			s := NewService(r, sources, sources, sources, sources, nil)
+			s := NewService(r, sources, sources, nil)
 			ss, err := s.Snapshot(ctx, uuid.New())
 			if err != nil {
 				t.Fatal(err)
@@ -132,4 +150,16 @@ func TestWorkerRevalidatesInputsDuringCompletion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (s *workerSources) ListMaterials(context.Context, uuid.UUID) ([]profile.Material, error) {
+	return nil, nil
+}
+func (s *workerSources) WithSources(ctx context.Context, user uuid.UUID, run func(context.Context, knowledgegaps.Sources) error) error {
+	s.reads++
+	p, _ := s.GetOverview(ctx, user)
+	settings, _ := s.GetSettings(ctx, user)
+	p.Settings = settings
+	m, _ := s.ProfileCurrent(ctx, user)
+	return run(ctx, knowledgegaps.Sources{Target: s.target, Market: m, Profile: p, Settings: settings, Fingerprint: s.marketHash, GoalSignature: knowledgegaps.GoalSignature(s.target), Readiness: knowledgegaps.Readiness{Code: s.ready, IncludedJDCount: 10, MarketComplete: true, ProfileComplete: true, AnalysisReady: s.ready == "ready", ReviewsAndGradingComplete: s.ready == "ready"}})
 }

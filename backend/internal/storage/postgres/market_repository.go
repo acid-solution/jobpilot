@@ -13,7 +13,6 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/abilitygrading"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type MarketRepository struct {
@@ -27,55 +26,6 @@ func NewMarketRepository(database *sql.DB, configured ...AbilityReviewQuotaLimit
 		quota = configured[0]
 	}
 	return &MarketRepository{database: newRepositoryDatabase(database), quota: quota}
-}
-
-func (r *MarketRepository) CreateWithAnalysisJob(
-	ctx context.Context,
-	userID uuid.UUID,
-	targetID uuid.UUID,
-	rawText string,
-	rawTextHash string,
-) (market.JobDescription, error) {
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return market.JobDescription{}, fmt.Errorf("begin jd transaction: %w", err)
-	}
-	defer transaction.Rollback()
-
-	jdID := uuid.New()
-	jobID := uuid.New()
-	const insertJD = `
-		INSERT INTO job_descriptions (id, user_id, target_id, raw_text, raw_text_hash, status)
-		VALUES ($1, $2, $3, $4, $5, 'processing')
-		RETURNING id, target_id, COALESCE(title, ''), COALESCE(company, ''), status,
-		          COALESCE(primary_category, ''), COALESCE(secondary_category, ''),
-		          COALESCE(relevance_reason, ''), COALESCE(conditions, ''), raw_text,
-		          created_at, updated_at`
-
-	result, err := scanJD(transaction.QueryRowContext(ctx, insertJD, jdID, userID, targetID, rawText, rawTextHash), "queued")
-	if err != nil {
-		var postgresError *pgconn.PgError
-		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
-			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-				return market.JobDescription{}, errors.Join(err, rollbackErr)
-			}
-			return market.JobDescription{}, r.duplicateError(ctx, userID, targetID, rawTextHash, uuid.Nil)
-		}
-		return market.JobDescription{}, err
-	}
-
-	const insertJob = `
-		INSERT INTO analysis_jobs (
-			id, user_id, target_id, job_description_id, job_type, status
-		) VALUES ($1, $2, $3, $4, 'jd_analysis', 'queued')`
-	if _, err := transaction.ExecContext(ctx, insertJob, jobID, userID, targetID, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("insert jd analysis job: %w", err)
-	}
-	if err := transaction.Commit(); err != nil {
-		return market.JobDescription{}, fmt.Errorf("commit jd transaction: %w", err)
-	}
-	result.ValidationStatus = "pending"
-	return result, nil
 }
 
 func (r *MarketRepository) ListByTarget(
@@ -187,75 +137,6 @@ func (r *MarketRepository) ListByTarget(
 	return result, nil
 }
 
-func (r *MarketRepository) UpdateRawText(ctx context.Context, userID, jdID uuid.UUID, rawText, rawTextHash string) (market.JobDescription, error) {
-	transaction, err := r.database.BeginTx(ctx, nil)
-	if err != nil {
-		return market.JobDescription{}, fmt.Errorf("begin edit jd transaction: %w", err)
-	}
-	defer transaction.Rollback()
-	if err := lockUserMutationTx(ctx, transaction.Tx, userID); err != nil {
-		return market.JobDescription{}, err
-	}
-
-	var targetID uuid.UUID
-	err = transaction.QueryRowContext(ctx, `SELECT target_id FROM job_descriptions WHERE id=$1 AND user_id=$2 FOR UPDATE`, jdID, userID).Scan(&targetID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return market.JobDescription{}, market.ErrNotFound
-	}
-	if err != nil {
-		return market.JobDescription{}, fmt.Errorf("lock jd for editing: %w", err)
-	}
-	var existingID uuid.UUID
-	err = transaction.QueryRowContext(ctx, `SELECT id FROM job_descriptions WHERE user_id=$1 AND target_id=$2 AND raw_text_hash=$3 AND id<>$4 LIMIT 1`, userID, targetID, rawTextHash, jdID).Scan(&existingID)
-	if err == nil {
-		return market.JobDescription{}, &market.DuplicateError{ExistingID: existingID}
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return market.JobDescription{}, fmt.Errorf("check edited jd duplicate: %w", err)
-	}
-
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM job_description_classifications WHERE job_description_id=$1`, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("clear jd classifications: %w", err)
-	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM job_description_abilities WHERE job_description_id=$1`, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("clear jd abilities: %w", err)
-	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM job_description_ability_requirements WHERE job_description_id=$1`, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("clear jd requirements: %w", err)
-	}
-	if _, err = transaction.ExecContext(ctx, `DELETE FROM ability_review_requests request WHERE request.review_type='ability' AND request.status<>'succeeded' AND NOT EXISTS(SELECT 1 FROM job_description_ability_requirement_options option WHERE option.review_request_id=request.id)`); err != nil {
-		return market.JobDescription{}, fmt.Errorf("clear orphaned ability reviews: %w", err)
-	}
-	_, err = transaction.ExecContext(ctx, `UPDATE job_descriptions SET raw_text=$3,raw_text_hash=$4,status='processing',title=NULL,company=NULL,primary_category=NULL,secondary_category=NULL,relevance_reason=NULL,conditions=NULL,employment_type='',responsibilities='[]'::jsonb,ability_mentions='[]'::jsonb,analysis_provider=NULL,analysis_model=NULL,analysis_prompt_version=NULL,document_type=NULL,validation_status='pending',validation_reason=NULL,updated_at=NOW() WHERE id=$1 AND user_id=$2`, jdID, userID, rawText, rawTextHash)
-	if err != nil {
-		var postgresError *pgconn.PgError
-		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
-			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
-				return market.JobDescription{}, errors.Join(err, rollbackErr)
-			}
-			return market.JobDescription{}, r.duplicateError(ctx, userID, targetID, rawTextHash, jdID)
-		}
-		return market.JobDescription{}, fmt.Errorf("update jd text: %w", err)
-	}
-	if err := enqueueJDAbilityGrading(ctx, transaction.Tx, userID, targetID, jdID); err != nil {
-		return market.JobDescription{}, fmt.Errorf("invalidate edited JD grading input: %w", err)
-	}
-	result, err := transaction.ExecContext(ctx, `UPDATE analysis_jobs SET status='queued',attempts=0,next_attempt_at=NOW(),locked_at=NULL,lease_token=NULL,heartbeat_at=NULL,lease_expires_at=NULL,last_error=NULL,preserve_previous_result=FALSE,updated_at=NOW() WHERE job_description_id=$1 AND job_type='jd_analysis'`, jdID)
-	if err != nil {
-		return market.JobDescription{}, fmt.Errorf("requeue edited jd: %w", err)
-	}
-	if count, _ := result.RowsAffected(); count == 0 {
-		_, err = transaction.ExecContext(ctx, `INSERT INTO analysis_jobs(id,user_id,target_id,job_description_id,job_type,status) VALUES($1,$2,$3,$4,'jd_analysis','queued')`, uuid.New(), userID, targetID, jdID)
-		if err != nil {
-			return market.JobDescription{}, fmt.Errorf("create edited jd job: %w", err)
-		}
-	}
-	if err = transaction.Commit(); err != nil {
-		return market.JobDescription{}, fmt.Errorf("commit edited jd: %w", err)
-	}
-	return r.FindByID(ctx, userID, jdID)
-}
-
 func (r *MarketRepository) Delete(ctx context.Context, userID, jdID uuid.UUID) error {
 	transaction, err := r.database.BeginTx(ctx, nil)
 	if err != nil {
@@ -276,21 +157,6 @@ func (r *MarketRepository) Delete(ctx context.Context, userID, jdID uuid.UUID) e
 		return fmt.Errorf("commit delete jd: %w", err)
 	}
 	return nil
-}
-
-func (r *MarketRepository) duplicateError(ctx context.Context, userID, targetID uuid.UUID, rawTextHash string, excludeID uuid.UUID) error {
-	query := `SELECT id FROM job_descriptions WHERE user_id=$1 AND target_id=$2 AND raw_text_hash=$3`
-	arguments := []any{userID, targetID, rawTextHash}
-	if excludeID != uuid.Nil {
-		query += ` AND id<>$4`
-		arguments = append(arguments, excludeID)
-	}
-	query += ` LIMIT 1`
-	var existingID uuid.UUID
-	if err := r.database.QueryRowContext(ctx, query, arguments...).Scan(&existingID); err != nil {
-		return market.ErrDuplicateJD
-	}
-	return &market.DuplicateError{ExistingID: existingID}
 }
 
 func (r *MarketRepository) FindByID(ctx context.Context, userID, jdID uuid.UUID) (market.JobDescription, error) {
@@ -430,6 +296,13 @@ func (r *MarketRepository) RetryAnalysis(ctx context.Context, userID, jdID uuid.
 	}
 	defer transaction.Rollback()
 
+	if err = lockUserMutationTx(ctx, transaction.Tx, userID); err != nil {
+		return market.JobDescription{}, err
+	}
+	if err = seedHistoricalJDStages(ctx, transaction.Tx, userID, jdID); err != nil {
+		return market.JobDescription{}, err
+	}
+
 	var preservePreviousResult bool
 	if _, err = transaction.ExecContext(ctx, `UPDATE jd_analysis_stages SET attempts=0,retryable=TRUE WHERE job_description_id=$1 AND status='failed' AND EXISTS(SELECT 1 FROM job_descriptions WHERE id=$1 AND user_id=$2)`, jdID, userID); err != nil {
 		return market.JobDescription{}, err
@@ -438,7 +311,7 @@ func (r *MarketRepository) RetryAnalysis(ctx context.Context, userID, jdID uuid.
 		UPDATE analysis_jobs job
 		SET status = 'queued', attempts = 0, next_attempt_at = NOW(), locked_at = NULL,
 		    lease_token = NULL, heartbeat_at = NULL, lease_expires_at = NULL,
-		    last_error = NULL, updated_at = NOW()
+		    last_error = NULL, preserve_previous_result = job.preserve_previous_result OR (jd.validation_status='valid' AND jd.status IN ('included','reference','excluded')), updated_at = NOW()
 		FROM job_descriptions jd
 		WHERE job.job_description_id = jd.id AND jd.id = $1 AND jd.user_id = $2
 		  AND job.job_type = 'jd_analysis'
@@ -653,31 +526,6 @@ func (r *MarketRepository) ProfileByTarget(ctx context.Context, userID, targetID
 		profile.Abilities[accumulator.index].TargetLevel = profile.Abilities[accumulator.index].LevelSummary.RecommendedLevel
 	}
 	return profile, nil
-}
-
-func scanJD(row rowScanner, jobStatus string) (market.JobDescription, error) {
-	var result market.JobDescription
-	if err := row.Scan(
-		&result.ID,
-		&result.TargetID,
-		&result.Title,
-		&result.Company,
-		&result.Status,
-		&result.PrimaryCategory,
-		&result.SecondaryCategory,
-		&result.Reason,
-		&result.Conditions,
-		&result.RawText,
-		&result.CreatedAt,
-		&result.UpdatedAt,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return market.JobDescription{}, market.ErrNotFound
-		}
-		return market.JobDescription{}, fmt.Errorf("scan job description: %w", err)
-	}
-	result.JobStatus = jobStatus
-	return result, nil
 }
 
 func scanJDWithJobStatus(row rowScanner) (market.JobDescription, error) {

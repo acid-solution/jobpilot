@@ -13,226 +13,6 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 )
 
-func TestAnalyzeJDUsesJSONModeAndKeepsOnlyQuotedEvidence(t *testing.T) {
-	catalog := testCatalog()
-	catalog.Abilities = append(catalog.Abilities, jdanalysis.AbilityOption{Code: "sentinel-ability", Name: "DO_NOT_SEND_ABILITY_MARKER"})
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/chat/completions" {
-			t.Fatalf("unexpected path: %s", request.URL.Path)
-		}
-		if request.Header.Get("Authorization") != "Bearer sk-test-key" {
-			t.Fatal("missing bearer token")
-		}
-		var body chatRequest
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body.Model != "deepseek-flash" || body.Thinking.Type != "disabled" || body.ResponseFormat.Type != "json_object" {
-			t.Fatalf("unexpected request: %#v", body)
-		}
-		prompt := body.Messages[0].Content
-		if strings.Contains(prompt, "能力目录：") || strings.Contains(prompt, "DO_NOT_SEND_ABILITY_MARKER") {
-			t.Fatal("initial JD extraction must not include the full ability catalog")
-		}
-		for _, required := range []string{"definition", "include_signals", "exclude_signals", "confused_with", "岗位标题只能辅助理解", "单个关键词", "恰好一个主导小类", "ability_requirements", "any_of", "at_least_n", "qualifier", "同一段要求原文只能生成一个要求组"} {
-			if !strings.Contains(prompt, required) {
-				t.Fatalf("system prompt is missing %q: %s", required, prompt)
-			}
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"document_type\":\"job_description\",\"validation_status\":\"valid\",\"validation_reason\":\"\",\"title\":\"Go 后端实习生\",\"company\":\"示例公司\",\"employment_type\":\"internship\",\"responsibilities\":[\"开发后端服务\"],\"classifications\":[{\"category_code\":\"backend\",\"specialty_code\":\"backend-business\",\"relation\":\"primary\",\"evidence\":\"开发后端服务\",\"reason\":\"职责直接面向业务服务实现，而非通用中间件。\"}],\"ability_requirements\":[{\"operator\":\"single\",\"required_count\":1,\"evidence\":\"熟悉 Go 和 PostgreSQL\",\"options\":[{\"name\":\"Golang\",\"catalog_code\":\"sentinel-ability\",\"qualifier\":\"\",\"evidence\":\"Go\",\"required_level\":3}]}],\"conditions\":[\"本科及以上\"]}"}}]}`))
-	}))
-	defer server.Close()
-
-	rawJD := "Go 后端实习生，负责开发后端服务，熟悉 Go 和 PostgreSQL，本科及以上。"
-	result, err := NewClient(server.URL, server.Client()).AnalyzeJD(
-		context.Background(), "sk-test-key", "deepseek-flash", rawJD, catalog,
-	)
-	if err != nil {
-		t.Fatalf("AnalyzeJD: %v", err)
-	}
-	if result.Title != "Go 后端实习生" || len(result.AbilityMentions) != 1 || len(result.AbilityRequirements) != 1 {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-	if result.AbilityMentions[0].Name != "Go" {
-		t.Fatalf("unexpected ability: %#v", result.AbilityMentions[0])
-	}
-	if result.AbilityMentions[0].CatalogCode != "ability-go" || result.AbilityMentions[0].RequiredLevel != nil {
-		t.Fatalf("model-supplied catalog code and level must be ignored: %#v", result.AbilityMentions[0])
-	}
-	if len(result.Classifications) != 1 || result.Classifications[0].CategoryCode != "backend" {
-		t.Fatalf("unexpected classifications: %#v", result.Classifications)
-	}
-	if result.ValidationStatus != "valid" {
-		t.Fatalf("unexpected validation: %#v", result)
-	}
-}
-
-func TestAnalyzeJDCorrectsInvalidOutputWithValidationFeedback(t *testing.T) {
-	for _, invalidJSON := range []bool{false, true} {
-		t.Run(map[bool]string{false: "reconstructed evidence", true: "invalid JSON"}[invalidJSON], func(t *testing.T) {
-			parsed := testJDWithSharedModifier()
-			parsed.AbilityRequirements[0].Options[0].Evidence = "熟悉算法"
-			invalid, _ := json.Marshal(parsed)
-			if invalidJSON {
-				invalid = []byte(`{"document_type":`)
-			}
-			parsed.AbilityRequirements[0].Options[0].Evidence = "算法"
-			corrected, _ := json.Marshal(parsed)
-			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				var request chatRequest
-				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-					t.Error(err)
-				}
-				content := string(invalid)
-				if calls == 2 {
-					if len(request.Messages) != 4 || request.Messages[2].Role != "assistant" || request.Messages[2].Content != string(invalid) {
-						t.Errorf("correction must include the previous output: %#v", request.Messages)
-					} else {
-						feedback := request.Messages[3]
-						if feedback.Role != "user" || !strings.Contains(feedback.Content, "连续逐字引用") ||
-							(!invalidJSON && !strings.Contains(feedback.Content, "ability_requirements[0].options[0].evidence")) {
-							t.Errorf("missing actionable validation feedback: %#v", feedback)
-						}
-					}
-					content = string(corrected)
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": content}}}})
-			}))
-			defer server.Close()
-			result, err := NewClient(server.URL, server.Client()).AnalyzeJD(t.Context(), "test-key", "test-model", "开发后端服务；熟悉数据结构和算法。", testCatalog())
-			if err != nil || calls != 2 {
-				t.Fatalf("correction did not succeed: calls=%d err=%v", calls, err)
-			}
-			if result.ValidationStatus != jdanalysis.ValidationValid || len(result.AbilityRequirements) != 1 || result.AbilityRequirements[0].Options[0].Evidence != "算法" {
-				t.Fatalf("corrected requirement was lost: %#v", result)
-			}
-		})
-	}
-}
-
-func TestAnalyzeJDBoundsCorrectionAndKeepsStrictEvidenceValidation(t *testing.T) {
-	parsed := testJDWithSharedModifier()
-	parsed.AbilityRequirements[0].Options[0].Evidence = "熟悉算法"
-	invalid, _ := json.Marshal(parsed)
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": string(invalid)}}}})
-	}))
-	defer server.Close()
-	_, err := NewClient(server.URL, server.Client()).AnalyzeJD(t.Context(), "test-key", "test-model", "开发后端服务；熟悉数据结构和算法。", testCatalog())
-	var classified *jdanalysis.ClassifiedError
-	if calls != 2 || !errors.As(err, &classified) || classified.FailureCode != "model_invalid_response" || !classified.CanRetry {
-		t.Fatalf("expected bounded correction and classified failure: calls=%d err=%v", calls, err)
-	}
-	if !strings.Contains(err.Error(), "ability_requirements[0].options[0].evidence") || strings.Contains(err.Error(), "熟悉算法") {
-		t.Fatalf("diagnostic must locate the field without logging source content: %v", err)
-	}
-}
-
-func TestNormalizeAbilityOptionEvidenceDiagnosesDistinctFailures(t *testing.T) {
-	for _, tc := range []struct {
-		name, evidence, label, message string
-	}{
-		{"missing name", "算法", "", ".name is missing"},
-		{"missing evidence", "", "算法", ".evidence is missing"},
-		{"reconstructed modifier", "熟悉算法", "算法", ".evidence is not a continuous quote"},
-		{"unrelated source sentence", "开发后端服务", "后端服务", ".evidence is outside its requirement"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			parsed := testJDWithSharedModifier()
-			parsed.AbilityRequirements[0].Options[0].Name = tc.label
-			parsed.AbilityRequirements[0].Options[0].Evidence = tc.evidence
-			_, err := normalize(parsed, "开发后端服务；熟悉数据结构和算法。", testCatalog())
-			if err == nil || !strings.Contains(err.Error(), "ability_requirements[0].options[0]"+tc.message) {
-				t.Fatalf("expected precise validation failure, got %v", err)
-			}
-		})
-	}
-}
-
-func TestNormalizeReportsOriginalOptionIndexAfterSplittingSingles(t *testing.T) {
-	parsed := testJDWithSharedModifier()
-	parsed.AbilityRequirements[0].Options = []parsedAbilityRequirementOption{
-		{Name: "数据结构", Evidence: "数据结构"},
-		{Name: "算法", Evidence: "熟悉算法"},
-	}
-	_, err := normalize(parsed, "开发后端服务；熟悉数据结构和算法。", testCatalog())
-	if err == nil || !strings.Contains(err.Error(), "ability_requirements[0].options[1].evidence") {
-		t.Fatalf("correction must locate the option in the original JSON: %v", err)
-	}
-}
-
-func testJDWithSharedModifier() parsedJD {
-	return parsedJD{
-		DocumentType: jdanalysis.DocumentJobDescription, ValidationStatus: jdanalysis.ValidationValid,
-		Title: "后端开发", EmploymentType: "campus", Responsibilities: []string{"开发后端服务"},
-		Classifications:     []parsedClassification{{CategoryCode: "backend", SpecialtyCode: "backend-business", Relation: "primary", Evidence: "开发后端服务", Reason: "交付业务服务"}},
-		AbilityRequirements: []parsedAbilityRequirement{{Operator: jdanalysis.RequirementSingle, RequiredCount: 1, Evidence: "熟悉数据结构和算法", Options: []parsedAbilityRequirementOption{{Name: "算法", Evidence: "算法"}}}},
-	}
-}
-
-func TestNormalizeAbilityRequirementsRemovesSingleDuplicatedByAnyOfFromSameEvidence(t *testing.T) {
-	rawJD := "精通至少一门编程语言，包括但不仅限于：Java、C++、Python、Go；"
-	evidence := "精通至少一门编程语言，包括但不仅限于：Java、C++、Python、Go"
-	requirements, mentions, err := normalizeAbilityRequirements([]parsedAbilityRequirement{
-		{
-			Operator: jdanalysis.RequirementSingle, RequiredCount: 1, Evidence: evidence,
-			Options: []parsedAbilityRequirementOption{{Name: "Java", CatalogCode: "ability-java", Evidence: "Java"}},
-		},
-		{
-			Operator: jdanalysis.RequirementAnyOf, RequiredCount: 1, Evidence: evidence,
-			Options: []parsedAbilityRequirementOption{
-				{Name: "Java", CatalogCode: "ability-java", Evidence: "Java"},
-				{Name: "C++", CatalogCode: "ability-cpp", Evidence: "C++"},
-				{Name: "Python", CatalogCode: "ability-python", Evidence: "Python"},
-				{Name: "Go", CatalogCode: "ability-go", Evidence: "Go"},
-			},
-		},
-	}, rawJD, testCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requirements) != 1 || requirements[0].Operator != jdanalysis.RequirementAnyOf || len(requirements[0].Options) != 4 {
-		t.Fatalf("expected only the complete any_of group, got %#v", requirements)
-	}
-	javaMentions := 0
-	for _, mention := range mentions {
-		if mention.CatalogCode == "ability-java" {
-			javaMentions++
-		}
-	}
-	if javaMentions != 1 {
-		t.Fatalf("expected one Java mention, got %#v", mentions)
-	}
-}
-
-func TestNormalizeAbilityRequirementsKeepsSameAbilityFromDifferentEvidence(t *testing.T) {
-	rawJD := "必须使用 Java 开发核心服务；另需熟悉一门语言，可选 Java 或 Python。"
-	requirements, _, err := normalizeAbilityRequirements([]parsedAbilityRequirement{
-		{
-			Operator: jdanalysis.RequirementSingle, RequiredCount: 1, Evidence: "必须使用 Java 开发核心服务",
-			Options: []parsedAbilityRequirementOption{{Name: "Java", CatalogCode: "ability-java", Evidence: "Java"}},
-		},
-		{
-			Operator: jdanalysis.RequirementAnyOf, RequiredCount: 1, Evidence: "另需熟悉一门语言，可选 Java 或 Python",
-			Options: []parsedAbilityRequirementOption{
-				{Name: "Java", CatalogCode: "ability-java", Evidence: "Java"},
-				{Name: "Python", CatalogCode: "ability-python", Evidence: "Python"},
-			},
-		},
-	}, rawJD, testCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requirements) != 2 {
-		t.Fatalf("requirements from separate sentences must be preserved: %#v", requirements)
-	}
-}
-
 func TestReviewAbilityTreatsEvidenceAsDataAndReturnsUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body chatRequest
@@ -297,159 +77,18 @@ func TestAbilityAliasReviewUsesIndependentPromptAndNoTools(t *testing.T) {
 	}
 }
 
-func TestNormalizeAbilityRequirementGroupsAndKeepsSpecificQualifiers(t *testing.T) {
-	rawJD := "熟悉一门后端语言（Go/Python/C++/Java都行）；写过 Function Calling，或开发过 MCP Server/Client。"
-	result, mentions, err := normalizeAbilityRequirements([]parsedAbilityRequirement{
-		{
-			Operator: jdanalysis.RequirementAnyOf, RequiredCount: 1,
-			Evidence: "熟悉一门后端语言（Go/Python/C++/Java都行）",
-			Options: []parsedAbilityRequirementOption{
-				{Name: "Go", CatalogCode: "ability-go", Evidence: "Go"},
-				{Name: "Python", CatalogCode: "ability-python", Evidence: "Python"},
-				{Name: "C++", CatalogCode: "ability-cpp", Evidence: "C++"},
-				{Name: "Java", CatalogCode: "ability-java", Evidence: "Java"},
-			},
-		},
-		{
-			Operator: jdanalysis.RequirementAnyOf, RequiredCount: 1,
-			Evidence: "写过 Function Calling，或开发过 MCP Server/Client",
-			Options: []parsedAbilityRequirementOption{
-				{Name: "Function Calling", CatalogCode: "ability-function-calling", Evidence: "Function Calling"},
-				{Name: "MCP Server/Client", Qualifier: "MCP Server/Client 开发经验", Evidence: "MCP Server/Client"},
-			},
-		},
-	}, rawJD, testCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result) != 2 || len(result[0].Options) != 4 || len(result[1].Options) != 2 {
-		t.Fatalf("unexpected requirements: %#v", result)
-	}
-	if len(mentions) != 6 {
-		t.Fatalf("unexpected flattened mentions: %#v", mentions)
-	}
-	if result[1].Options[0].AbilityName != "Function Calling" {
-		t.Fatalf("specific qualifier was lost: %#v", result[1].Options[0])
-	}
-	if result[1].Options[1].AbilityName != "MCP 开发" || result[1].Options[1].Qualifier != "MCP Server/Client 开发经验" {
-		t.Fatalf("MCP variants were not normalized or the qualifier was lost: %#v", result[1].Options)
-	}
-}
-
-func TestNormalizeAbilityRequirementsRepairsAtLeastOneAsAnyOf(t *testing.T) {
-	rawJD := "精通至少一门编程语言，包括 Java、C++、Python、Go。"
-	evidence := "精通至少一门编程语言，包括 Java、C++、Python、Go"
-	requirements, mentions, err := normalizeAbilityRequirements([]parsedAbilityRequirement{{
-		Operator: jdanalysis.RequirementAtLeastN, RequiredCount: 1, Evidence: evidence,
-		Options: []parsedAbilityRequirementOption{
-			{Name: "Java", CatalogCode: "ability-java", Evidence: "Java"},
-			{Name: "C++", CatalogCode: "ability-cpp", Evidence: "C++"},
-			{Name: "Python", CatalogCode: "ability-python", Evidence: "Python"},
-			{Name: "Go", CatalogCode: "ability-go", Evidence: "Go"},
-		},
-	}}, rawJD, testCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requirements) != 1 || requirements[0].Operator != jdanalysis.RequirementAnyOf ||
-		requirements[0].RequiredCount != 1 || len(requirements[0].Options) != 4 {
-		t.Fatalf("expected repaired any_of requirement, got %#v", requirements)
-	}
-	if len(mentions) != 4 {
-		t.Fatalf("expected four satisfying abilities, got %#v", mentions)
-	}
-}
-
-func TestNormalizeAbilityRequirementsMergesOptionsResolvedToSameAbility(t *testing.T) {
-	rawJD := "熟悉 Go 或 Golang。"
-	requirements, mentions, err := normalizeAbilityRequirements([]parsedAbilityRequirement{{
-		Operator: jdanalysis.RequirementAnyOf, RequiredCount: 1, Evidence: "熟悉 Go 或 Golang",
-		Options: []parsedAbilityRequirementOption{
-			{Name: "Go", CatalogCode: "ability-go", Evidence: "Go"},
-			{Name: "Golang", CatalogCode: "ability-go", Evidence: "Golang"},
-		},
-	}}, rawJD, testCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requirements) != 1 || requirements[0].Operator != jdanalysis.RequirementSingle || len(requirements[0].Options) != 1 {
-		t.Fatalf("expected one collapsed single requirement, got %#v", requirements)
-	}
-	if len(mentions) != 1 || mentions[0].CatalogCode != "ability-go" || mentions[0].Evidence != "熟悉 Go 或 Golang" {
-		t.Fatalf("unexpected collapsed mentions: %#v", mentions)
-	}
-}
-
-func TestNormalizeAbilityRequirementGroupsRejectInvalidContracts(t *testing.T) {
-	rawJD := "熟悉 Go、Python 或 Java，并至少掌握其中两项。"
-	tests := []struct {
-		name        string
-		requirement parsedAbilityRequirement
-	}{
-		{name: "single invalid required count", requirement: parsedAbilityRequirement{Operator: jdanalysis.RequirementSingle, RequiredCount: 2, Evidence: "熟悉 Go、Python 或 Java", Options: []parsedAbilityRequirementOption{{Name: "Go", Evidence: "Go"}}}},
-		{name: "any of one option", requirement: parsedAbilityRequirement{Operator: jdanalysis.RequirementAnyOf, RequiredCount: 1, Evidence: "熟悉 Go、Python 或 Java", Options: []parsedAbilityRequirementOption{{Name: "Go", Evidence: "Go"}}}},
-		{name: "threshold exceeds options", requirement: parsedAbilityRequirement{Operator: jdanalysis.RequirementAtLeastN, RequiredCount: 3, Evidence: "熟悉 Go、Python 或 Java，并至少掌握其中两项", Options: []parsedAbilityRequirementOption{{Name: "Go", Evidence: "Go"}, {Name: "Python", Evidence: "Python"}}}},
-		{name: "evidence not quoted", requirement: parsedAbilityRequirement{Operator: jdanalysis.RequirementSingle, RequiredCount: 1, Evidence: "需要精通 Rust", Options: []parsedAbilityRequirementOption{{Name: "Rust", Evidence: "Rust"}}}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, _, err := normalizeAbilityRequirements([]parsedAbilityRequirement{test.requirement}, rawJD, testCatalog())
-			if err == nil {
-				t.Fatal("expected model_invalid_response")
-			}
-			var classified *jdanalysis.ClassifiedError
-			if !errors.As(err, &classified) || classified.FailureCode != "model_invalid_response" || !classified.CanRetry {
-				t.Fatalf("unexpected error: %#v", err)
-			}
-		})
-	}
-}
-
-func TestNormalizeAbilityRequirementsRepairsIndependentSinglesAndQuotedGroupEvidence(t *testing.T) {
-	rawJD := "岗位要求：数据结构、算法、操作系统、网络基础扎实；具备良好沟通能力。"
-	requirements, _, err := normalizeAbilityRequirements([]parsedAbilityRequirement{{
-		Operator: jdanalysis.RequirementSingle, RequiredCount: 1,
-		Evidence: "需要掌握计算机基础",
-		Options: []parsedAbilityRequirementOption{
-			{Name: "数据结构与算法", Evidence: "数据结构、算法"},
-			{Name: "操作系统", Evidence: "操作系统"},
-			{Name: "计算机网络", Evidence: "网络基础"},
-		},
-	}}, rawJD, testCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requirements) != 3 {
-		t.Fatalf("expected three independent single requirements, got %#v", requirements)
-	}
-	for _, requirement := range requirements {
-		if requirement.Operator != jdanalysis.RequirementSingle || len(requirement.Options) != 1 ||
-			requirement.Evidence != "岗位要求：数据结构、算法、操作系统、网络基础扎实" {
-			t.Fatalf("unexpected repaired requirement: %#v", requirement)
-		}
-	}
-}
-
 func TestNormalizeAcceptsOnePrimaryAndMultipleSecondariesWithSharedEvidence(t *testing.T) {
 	rawJD := "Agent 后端实习生，负责开发后端服务并构建 Agent 工具调用闭环。"
 	sharedEvidence := "负责开发后端服务并构建 Agent 工具调用闭环"
-	result, err := normalize(parsedJD{
-		DocumentType:     jdanalysis.DocumentJobDescription,
-		ValidationStatus: jdanalysis.ValidationValid,
-		Title:            "Agent 后端实习生",
-		Company:          "示例公司",
-		EmploymentType:   "internship",
-		Responsibilities: []string{sharedEvidence},
-		Classifications: []parsedClassification{
-			{CategoryCode: "backend", SpecialtyCode: "backend-business", Relation: "primary", Evidence: sharedEvidence, Reason: "职责包含具体服务端业务实现。"},
-			{CategoryCode: "ai-application", SpecialtyCode: "ai-agent-application", Relation: "secondary", Evidence: sharedEvidence, Reason: "职责还明确包含 Agent 工具调用执行闭环。"},
-		},
-	}, rawJD, testCatalog())
+	result, err := normalizeClassifications([]parsedClassification{
+		{CategoryCode: "backend", SpecialtyCode: "backend-business", Relation: "primary", Evidence: sharedEvidence, Reason: "职责包含具体服务端业务实现。"},
+		{CategoryCode: "ai-application", SpecialtyCode: "ai-agent-application", Relation: "secondary", Evidence: sharedEvidence, Reason: "职责还明确包含 Agent 工具调用执行闭环。"},
+	}, rawJD, "Agent 后端实习生", []string{sharedEvidence}, testCatalog())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Classifications) != 2 || result.Classifications[0].Reason == result.Classifications[1].Reason {
-		t.Fatalf("unexpected classifications: %#v", result.Classifications)
+	if len(result) != 2 || result[0].Reason == result[1].Reason {
+		t.Fatalf("unexpected classifications: %#v", result)
 	}
 }
 
@@ -519,11 +158,7 @@ func TestNormalizeRejectsInvalidClassificationContract(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := normalize(parsedJD{
-				DocumentType: jdanalysis.DocumentJobDescription, ValidationStatus: jdanalysis.ValidationValid,
-				Title: "Go 后端实习生", Company: "示例公司", EmploymentType: "internship",
-				Responsibilities: []string{responsibility}, Classifications: test.classifications,
-			}, rawJD, testCatalog())
+			_, err := normalizeClassifications(test.classifications, rawJD, "Go 后端实习生", []string{responsibility}, testCatalog())
 			if err == nil {
 				t.Fatal("expected model_invalid_response")
 			}
@@ -535,41 +170,7 @@ func TestNormalizeRejectsInvalidClassificationContract(t *testing.T) {
 	}
 }
 
-func TestNormalizeDowngradesStructurallyIncompleteJD(t *testing.T) {
-	result, err := normalize(parsedJD{
-		DocumentType:     jdanalysis.DocumentJobDescription,
-		ValidationStatus: jdanalysis.ValidationValid,
-		Title:            "Go 后端实习生",
-		Company:          "示例公司",
-		EmploymentType:   "internship",
-		Conditions:       []string{"本科及以上"},
-	}, "Go 后端实习生，本科及以上。", jdanalysis.Catalog{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ValidationStatus != jdanalysis.ValidationIncomplete {
-		t.Fatalf("expected incomplete, got %#v", result)
-	}
-}
-
-func TestNormalizeKeepsModelNonJDInvalid(t *testing.T) {
-	result, err := normalize(parsedJD{
-		DocumentType:     jdanalysis.DocumentNonJobDescription,
-		ValidationStatus: jdanalysis.ValidationInvalid,
-		ValidationReason: "该文本更像求职者简历，不是岗位招聘说明",
-		Title:            "未明确",
-		Company:          "未明确",
-		EmploymentType:   "unknown",
-	}, "本人熟悉 Go 开发，曾参与多个项目并获得奖项。", jdanalysis.Catalog{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ValidationStatus != jdanalysis.ValidationInvalid || result.ValidationReason == "" {
-		t.Fatalf("expected invalid with reason, got %#v", result)
-	}
-}
-
-func TestAnalyzeJDClassifiesAuthenticationFailureAsTerminal(t *testing.T) {
+func TestExtractJDClassifiesAuthenticationFailureAsTerminal(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -577,8 +178,8 @@ func TestAnalyzeJDClassifiesAuthenticationFailureAsTerminal(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewClient(server.URL, server.Client()).AnalyzeJD(
-		context.Background(), "bad-key", "deepseek-flash", "一份长度足够的岗位说明原文，用来测试鉴权失败。", jdanalysis.Catalog{},
+	_, err := NewClient(server.URL, server.Client()).ExtractJD(
+		context.Background(), "bad-key", "deepseek-flash", "一份长度足够的岗位说明原文，用来测试鉴权失败。",
 	)
 	var classified *jdanalysis.ClassifiedError
 	if calls != 1 || !errors.As(err, &classified) || classified.FailureCode != "model_auth_failed" || classified.CanRetry {

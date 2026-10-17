@@ -57,18 +57,14 @@ const (
 )
 
 type AbilityRequirementOption struct {
-	ExistingID              uuid.UUID `json:"-"`
-	OriginalAbilityID       uuid.UUID `json:"-"`
-	OriginalReviewRequestID uuid.UUID `json:"-"`
-	OriginalResolution      string    `json:"-"`
-	RawLabel                string
-	AbilityName             string
-	CatalogCode             string
-	Qualifier               string
-	Evidence                string
-	RequiredLevel           *int
-	Candidate               *AbilityCandidate
-	NormalizationReason     string
+	RawLabel            string
+	AbilityName         string
+	CatalogCode         string
+	Qualifier           string
+	Evidence            string
+	RequiredLevel       *int
+	Candidate           *AbilityCandidate
+	NormalizationReason string
 }
 
 type AbilityCandidate struct {
@@ -80,7 +76,6 @@ type AbilityCandidate struct {
 }
 
 type AbilityRequirement struct {
-	ExistingID      uuid.UUID `json:"-"`
 	Operator        AbilityRequirementOperator
 	RequiredCount   int
 	RequirementKind string
@@ -172,10 +167,9 @@ type ClassificationReviewResult struct {
 }
 
 type Result struct {
-	Warnings             []string                `json:"warnings,omitempty"`
-	VectorNormalized     bool                    `json:"-"`
-	OriginalOptions      []AbilityOptionSnapshot `json:"-"`
-	AliasProposals       []AbilityAliasProposal  `json:"-"`
+	Warnings             []string               `json:"warnings,omitempty"`
+	VectorNormalized     bool                   `json:"-"`
+	AliasProposals       []AbilityAliasProposal `json:"-"`
 	DocumentType         DocumentType
 	ValidationStatus     ValidationStatus
 	ValidationReason     string
@@ -191,13 +185,6 @@ type Result struct {
 	Model                string
 	PromptVersion        string
 	ClassificationReview *ClassificationReviewResult
-}
-
-type AbilityOptionSnapshot struct {
-	ID              uuid.UUID
-	AbilityID       uuid.UUID
-	ReviewRequestID uuid.UUID
-	Resolution      string
 }
 
 type AbilityAliasProposal struct {
@@ -217,6 +204,7 @@ type Job struct {
 }
 
 type Repository interface {
+	StageRepository
 	Catalog(context.Context) (Catalog, error)
 	RecoverExpired(context.Context) (int64, error)
 	Claim(context.Context, time.Duration) (Job, error)
@@ -230,7 +218,8 @@ type CredentialProvider interface {
 }
 
 type Analyzer interface {
-	AnalyzeJD(context.Context, string, string, string, Catalog) (Result, error)
+	ExtractJD(context.Context, string, string, string) (Result, error)
+	ClassifyJD(context.Context, string, string, string, Result, Catalog) ([]JobClassification, error)
 }
 
 type ClassificationReviewer interface {

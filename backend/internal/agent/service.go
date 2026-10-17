@@ -32,17 +32,21 @@ type TargetService interface {
 	Catalog(context.Context) ([]target.Category, error)
 }
 type MarketService interface {
-	Submit(context.Context, uuid.UUID, string) (market.JobDescription, error)
-	SubmitBatch(context.Context, uuid.UUID, []string) (market.BatchResult, error)
 	ListCurrent(context.Context, uuid.UUID, market.ListFilter) ([]market.JobDescription, error)
 	Detail(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
-	Update(context.Context, uuid.UUID, uuid.UUID, string) (market.JobDescription, error)
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
 	Retry(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
 	RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
 	RetryAbilityGrading(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
 	ProfileCurrent(context.Context, uuid.UUID) (market.Profile, error)
 }
+type JDImportService interface {
+	Start(context.Context, uuid.UUID, string, *uuid.UUID) (jdimport.Session, error)
+	Get(context.Context, uuid.UUID, uuid.UUID) (jdimport.Session, error)
+	List(context.Context, uuid.UUID) ([]jdimport.Session, error)
+	Confirm(context.Context, uuid.UUID, uuid.UUID, []uuid.UUID) (jdimport.Session, error)
+}
+
 type ProfileService interface {
 	GetOverview(context.Context, uuid.UUID) (profile.Overview, error)
 	GetSettings(context.Context, uuid.UUID) (profile.Settings, error)
@@ -100,7 +104,7 @@ type Service struct {
 	Transactions     ActionTransactions
 	Targets          TargetService
 	Market           MarketService
-	Imports          *jdimport.Service
+	Imports          JDImportService
 	Profile          ProfileService
 	Gaps             GapsService
 	Projects         ProjectsService

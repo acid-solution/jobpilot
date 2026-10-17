@@ -38,18 +38,3 @@ func ValidateJDText(rawText string) error {
 	// Semantic rejection happens after scanning all source windows.
 	return nil
 }
-
-func isMostlyRepeatedPhrase(text []rune) bool {
-	for period := 1; period <= 16 && period*4 <= len(text); period++ {
-		matches := 0
-		for index, current := range text {
-			if current == text[index%period] {
-				matches++
-			}
-		}
-		if matches*10 >= len(text)*9 {
-			return true
-		}
-	}
-	return false
-}

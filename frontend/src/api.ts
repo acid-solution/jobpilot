@@ -341,19 +341,6 @@ export interface JDListFilters {
   category?: string
 }
 
-export interface JDBatchResult {
-  created_count: number
-  duplicate_count: number
-  invalid_count: number
-  items: Array<{
-    index: number
-    status: 'created' | 'duplicate' | 'invalid'
-    jd?: JobDescription
-    existing_jd_id?: string
-    error_code?: string
-    error_message?: string
-  }>
-}
 
 export interface ModelConfig {
   provider: 'deepseek'
@@ -566,19 +553,6 @@ export const jobPilotAPI = {
 		abilities: Array.isArray(profile.abilities) ? profile.abilities : [],
 		required_jd_count: profile.required_jd_count > 0 ? profile.required_jd_count : 10,
 	})),
-  getJD: (id: string) => request<JobDescription>(`/api/v1/jds/${id}`),
-  createJD: (rawText: string) => request<JobDescription>('/api/v1/jds', {
-    method: 'POST',
-    body: JSON.stringify({ raw_text: rawText }),
-  }),
-	createJDBatch: (rawTexts: string[]) => request<JDBatchResult>('/api/v1/jds/batch', {
-		method: 'POST',
-		body: JSON.stringify({ raw_texts: rawTexts }),
-	}),
-	updateJD: (id: string, rawText: string) => request<JobDescription>(`/api/v1/jds/${id}`, {
-		method: 'PUT',
-		body: JSON.stringify({ raw_text: rawText }),
-	}),
 	deleteJD: (id: string) => request<void>(`/api/v1/jds/${id}`, { method: 'DELETE' }),
   retryJD: (id: string) => request<JobDescription>(`/api/v1/jds/${id}/retry`, { method: 'POST' }),
 	retryAbilityReviews: (id: string) => request<JobDescription>(`/api/v1/jds/${id}/ability-reviews/retry`, { method: 'POST' }),
@@ -634,7 +608,6 @@ export const jobPilotAPI = {
     body: JSON.stringify({ concept_id: conceptId, mode }),
   }),
   listProfileSessions: () => request<{ sessions: ProfilePracticeSession[] }>('/api/v1/profile/sessions'),
-  getProfileSession: (id: string) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}`),
   saveProfileAnswer: (id: string, questionId: string, answer: string) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}/answers`, { method: 'PUT', body: JSON.stringify({ question_id: questionId, answer }) }),
   confirmProfileSession: (id: string) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}/confirm`, { method: 'POST' }),
   submitProfileSession: (id: string, answers: Array<{ question_id: string; answer: string }>) => request<{ session: ProfilePracticeSession }>(`/api/v1/profile/sessions/${id}/submit`, {

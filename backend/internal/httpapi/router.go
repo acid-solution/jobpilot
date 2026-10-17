@@ -9,7 +9,6 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/knowledgegaps"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
@@ -29,11 +28,8 @@ type TargetService interface {
 }
 
 type MarketService interface {
-	Submit(context.Context, uuid.UUID, string) (market.JobDescription, error)
-	SubmitBatch(context.Context, uuid.UUID, []string) (market.BatchResult, error)
 	ListCurrent(context.Context, uuid.UUID, market.ListFilter) ([]market.JobDescription, error)
 	Detail(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
-	Update(context.Context, uuid.UUID, uuid.UUID, string) (market.JobDescription, error)
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
 	Retry(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
 	RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error)
@@ -76,7 +72,7 @@ type ProjectRecommendationsService interface {
 }
 
 type Dependencies struct {
-	JDImports                     *jdimport.Service
+	JDImports                     JDImportService
 	AgentMemoryService            *agent.Service
 	ModelUsage                    modelusage.Repository
 	LearningRoutesService         LearningRoutesService
@@ -142,14 +138,14 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 		if dependencies.JDImports != nil {
 			registerJDImports(api, dependencies.JDImports)
 		}
-		api.POST("/jds", submitJD(dependencies.MarketService, dependencies.JDImports))
-		api.POST("/jds/batch", submitJDBatch(dependencies.MarketService, dependencies.JDImports))
+		api.POST("/jds", submitJD(dependencies.JDImports))
+		api.POST("/jds/batch", submitJDBatch(dependencies.JDImports))
 		api.GET("/jds", listJDs(dependencies.MarketService))
 		api.GET("/market-profile", marketProfile(dependencies.MarketService))
 		api.GET("/jds/:id", jdDetail(dependencies.MarketService))
-		api.PUT("/jds/:id", updateJD(dependencies.MarketService, dependencies.JDImports))
+		api.PUT("/jds/:id", updateJD(dependencies.JDImports))
 		api.DELETE("/jds/:id", deleteJD(dependencies.MarketService))
-		api.POST("/jds/:id/retry", retryJD(dependencies.MarketService, dependencies.JDImports))
+		api.POST("/jds/:id/retry", retryJD(dependencies.MarketService))
 		api.POST("/jds/:id/ability-reviews/retry", retryAbilityReviews(dependencies.MarketService))
 		api.POST("/jds/:id/ability-grading/retry", retryAbilityGrading(dependencies.MarketService))
 		api.GET("/model-configs/deepseek", getDeepSeekConfig(dependencies.ModelConfigService))
@@ -209,7 +205,7 @@ func serializeUserMutations(locker mutationlock.Locker) gin.HandlerFunc {
 	}
 }
 
-func submitJDBatch(service MarketService, imports ...*jdimport.Service) gin.HandlerFunc {
+func submitJDBatch(service JDImportService) gin.HandlerFunc {
 	type request struct {
 		RawTexts []string `json:"raw_texts"`
 	}
@@ -219,25 +215,11 @@ func submitJDBatch(service MarketService, imports ...*jdimport.Service) gin.Hand
 			writeError(c, http.StatusBadRequest, "invalid_request", "批量 JD 格式不正确")
 			return
 		}
-		if len(imports) > 0 && imports[0] != nil {
-			if len(input.RawTexts) == 0 || len(input.RawTexts) > 50 {
-				writeError(c, 400, "invalid_request", "一次支持 1～50 份文本")
-				return
-			}
-			out, err := imports[0].Start(c, identity.UserID(c), strings.Join(input.RawTexts, "\n---\n"), nil)
-			if err != nil {
-				importError(c, err)
-				return
-			}
-			c.JSON(202, gin.H{"data": out})
+		if len(input.RawTexts) == 0 || len(input.RawTexts) > 50 {
+			writeError(c, 400, "invalid_request", "一次支持 1～50 份文本")
 			return
 		}
-		result, err := service.SubmitBatch(c, identity.UserID(c), input.RawTexts)
-		if err != nil {
-			handleError(c, err)
-			return
-		}
-		c.JSON(http.StatusAccepted, gin.H{"data": result})
+		startJDImport(c, service, strings.Join(input.RawTexts, "\n---\n"), nil)
 	}
 }
 
@@ -290,7 +272,7 @@ func upsertCurrentTarget(service TargetService) gin.HandlerFunc {
 	}
 }
 
-func submitJD(service MarketService, imports ...*jdimport.Service) gin.HandlerFunc {
+func submitJD(service JDImportService) gin.HandlerFunc {
 	type request struct {
 		RawText string `json:"raw_text"`
 	}
@@ -300,21 +282,7 @@ func submitJD(service MarketService, imports ...*jdimport.Service) gin.HandlerFu
 			writeError(c, http.StatusBadRequest, "invalid_request", "请求内容不是有效的 JD")
 			return
 		}
-		if len(imports) > 0 && imports[0] != nil {
-			out, err := imports[0].Start(c, identity.UserID(c), input.RawText, nil)
-			if err != nil {
-				importError(c, err)
-				return
-			}
-			c.JSON(202, gin.H{"data": out})
-			return
-		}
-		result, err := service.Submit(c, identity.UserID(c), input.RawText)
-		if err != nil {
-			handleError(c, err)
-			return
-		}
-		c.JSON(http.StatusAccepted, gin.H{"data": result})
+		startJDImport(c, service, input.RawText, nil)
 	}
 }
 
@@ -341,7 +309,7 @@ func listJDs(service MarketService) gin.HandlerFunc {
 	}
 }
 
-func updateJD(service MarketService, imports ...*jdimport.Service) gin.HandlerFunc {
+func updateJD(service JDImportService) gin.HandlerFunc {
 	type request struct {
 		RawText string `json:"raw_text"`
 	}
@@ -356,21 +324,7 @@ func updateJD(service MarketService, imports ...*jdimport.Service) gin.HandlerFu
 			writeError(c, http.StatusBadRequest, "invalid_request", "请求内容不是有效的 JD")
 			return
 		}
-		if len(imports) > 0 && imports[0] != nil {
-			result, err := imports[0].Start(c, identity.UserID(c), input.RawText, &jdID)
-			if err != nil {
-				handleError(c, err)
-				return
-			}
-			c.JSON(http.StatusAccepted, gin.H{"data": result})
-			return
-		}
-		result, err := service.Update(c, identity.UserID(c), jdID, input.RawText)
-		if err != nil {
-			handleError(c, err)
-			return
-		}
-		c.JSON(http.StatusAccepted, gin.H{"data": result})
+		startJDImport(c, service, input.RawText, &jdID)
 	}
 }
 
@@ -405,28 +359,12 @@ func jdDetail(service MarketService) gin.HandlerFunc {
 	}
 }
 
-func retryJD(service MarketService, imports ...*jdimport.Service) gin.HandlerFunc {
+func retryJD(service MarketService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		jdID, err := uuid.Parse(c.Param("id"))
 		if err != nil {
 			writeError(c, http.StatusBadRequest, "invalid_jd_id", "JD 编号格式不正确")
 			return
-		}
-		if len(imports) > 0 && imports[0] != nil {
-			jd, e := service.Detail(c, identity.UserID(c), jdID)
-			if e != nil {
-				handleError(c, e)
-				return
-			}
-			if len(jd.Analysis.Stages) == 0 {
-				result, e := imports[0].Start(c, identity.UserID(c), jd.RawText, &jdID)
-				if e != nil {
-					handleError(c, e)
-					return
-				}
-				c.JSON(http.StatusAccepted, gin.H{"data": result})
-				return
-			}
 		}
 		result, err := service.Retry(c, identity.UserID(c), jdID)
 		if err != nil {

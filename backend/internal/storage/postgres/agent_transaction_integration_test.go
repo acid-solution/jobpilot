@@ -16,6 +16,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agentcontext"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/profile"
@@ -357,17 +358,38 @@ func TestAgentTransactionBatchDuplicateAndReadbackIsolated(t *testing.T) {
 	markets := market.NewService(NewMarketRepository(db), targets)
 	oldText := "测试公司招聘 Go 后端实习生，负责服务接口开发，要求熟悉 Go 和数据库。"
 	newText := "测试公司招聘 Python 后端实习生，负责数据服务开发，要求熟悉 Python 和数据库。"
-	if _, err := markets.Submit(ctx, user, oldText); err != nil {
+	current, err := targets.Current(ctx, user)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := NewMarketRepository(db).CreateWithAnalysisJob(ctx, user, current.ID, oldText, sourceHash(oldText)); err != nil {
+		t.Fatal(err)
+	}
+	imports := NewJDImportRepository(db)
+	session, err := imports.Create(ctx, user, current.ID, oldText+"\n"+newText, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := imports.Claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = imports.Complete(ctx, job, []jdimport.Candidate{{RawText: oldText}, {RawText: newText}, {RawText: newText}}); err != nil {
+		t.Fatal(err)
+	}
+	session, err = imports.Get(ctx, user, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []uuid.UUID{session.Candidates[0].ID, session.Candidates[1].ID}
 	for _, rollback := range []bool{true, false} {
 		err := repo.WithinUserTransaction(ctx, user, func(txCtx context.Context) error {
-			batch, err := markets.SubmitBatch(txCtx, user, []string{oldText, newText, newText})
+			batch, err := imports.Confirm(txCtx, user, session.ID, ids)
 			if err != nil {
 				return err
 			}
-			if batch.CreatedCount != 1 || batch.DuplicateCount != 2 {
-				return fmt.Errorf("unexpected duplicate handling: %+v", batch)
+			if batch.Status != "confirmed" {
+				return fmt.Errorf("import not confirmed: %s", batch.Status)
 			}
 			// Readback must see the uncommitted insert, and must finish its JD
 			// cursor before fetching per-JD details on the same connection.

@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelconfig"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/cloudwego/eino/adk"
@@ -88,7 +88,7 @@ func TestWriteToolExecutesOnlyAfterEinoResume(t *testing.T) {
 			}))
 			defer provider.Close()
 			transactions := &confirmationTransactions{repo: repo, business: business}
-			service := &Service{Repo: repo, Transactions: transactions, Targets: targets, Market: business, Credentials: confirmationCredentials{}, Checkpoints: checkpoints, DeepSeekBaseURL: provider.URL}
+			service := &Service{Repo: repo, Transactions: transactions, Targets: targets, Market: business, Imports: business, Credentials: confirmationCredentials{}, Checkpoints: checkpoints, DeepSeekBaseURL: provider.URL}
 			var events []Event
 			emit := func(event Event) { events = append(events, event) }
 			if err := service.Send(ctx, user, conversation, "market", "保存这份 JD", emit); err != nil {
@@ -191,19 +191,20 @@ func (confirmationCredentials) Credentials(context.Context, uuid.UUID) (modelcon
 
 type confirmationMarket struct {
 	MarketService
+	JDImportService
 	writes              int
 	stored              int
 	resumedWithApproval bool
 	err                 error
 }
 
-func (s *confirmationMarket) Submit(ctx context.Context, _ uuid.UUID, text string) (market.JobDescription, error) {
+func (s *confirmationMarket) Start(ctx context.Context, _ uuid.UUID, text string, _ *uuid.UUID) (jdimport.Session, error) {
 	s.writes++
 	s.stored++
 	interrupted, hasState, _ := tool.GetInterruptState[string](ctx)
 	isTarget, hasDecision, approved := tool.GetResumeContext[bool](ctx)
 	s.resumedWithApproval = interrupted && hasState && isTarget && hasDecision && approved
-	return market.JobDescription{ID: uuid.New(), RawText: text}, s.err
+	return jdimport.Session{ID: uuid.New(), Status: "queued"}, s.err
 }
 
 type confirmationRepository struct {
@@ -363,7 +364,7 @@ func TestApprovedActionCommitsBusinessAndReceiptTogether(t *testing.T) {
 			repo := &confirmationRepository{finishErr: tc.finishErr}
 			business := &confirmationMarket{err: tc.businessErr}
 			tx := &confirmationTransactions{repo: repo, business: business, commitErr: tc.commitErr}
-			s := &Service{Repo: repo, Transactions: tx, Market: business, Targets: &confirmationTargets{value: target.Target{ID: uuid.New()}}}
+			s := &Service{Repo: repo, Transactions: tx, Market: business, Imports: business, Targets: &confirmationTargets{value: target.Target{ID: uuid.New()}}}
 			args := json.RawMessage(`{"raw_text":"测试公司招聘 Go 后端，负责 API 开发，要求熟悉 Go。"}`)
 			snapshot, err := s.snapshot(ctx, user, "jd_add", args)
 			if err != nil {

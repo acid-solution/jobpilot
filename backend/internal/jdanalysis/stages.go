@@ -9,10 +9,6 @@ import (
 	"github.com/LeoninCS/jobpilot-next/backend/internal/modelusage"
 )
 
-type StagedAnalyzer interface {
-	ExtractJD(context.Context, string, string, string) (Result, error)
-	ClassifyJD(context.Context, string, string, string, Result, Catalog) ([]JobClassification, error)
-}
 type StageRepository interface {
 	LoadStage(context.Context, Job, string) (Result, bool, error)
 	SaveStage(context.Context, Job, string, string, Result, string, ...bool) error
@@ -33,14 +29,7 @@ func ExtractionCheckpointsFrom(ctx context.Context) (ExtractionCheckpoints, bool
 }
 
 func (w *Worker) analyze(ctx context.Context, job Job, creds modelconfig.Credentials, catalog Catalog) (Result, error) {
-	analyzer, staged := w.analyzer.(StagedAnalyzer)
-	if !staged {
-		return w.analyzeLegacy(ctx, job, creds, catalog)
-	}
-	repo, ok := w.repository.(StageRepository)
-	if !ok {
-		return Result{}, errors.New("JD stage repository is not configured")
-	}
+	analyzer, repo := w.analyzer, w.repository
 	run := func(stage string, fn func() (Result, error)) (Result, error) {
 		cached, found, err := repo.LoadStage(ctx, job, stage)
 		if err != nil || found {
@@ -140,30 +129,4 @@ func (w *Worker) analyze(ctx context.Context, job Job, creds modelconfig.Credent
 		}
 	}
 	return base, combined
-}
-
-// Compatibility for non-staged analyzers used by embedded integrations. The
-// deployed DeepSeek client always follows the checkpointed path above.
-func (w *Worker) analyzeLegacy(ctx context.Context, job Job, creds modelconfig.Credentials, catalog Catalog) (Result, error) {
-	result, err := w.analyzer.AnalyzeJD(ctx, creds.APIKey, creds.Model, job.RawText, catalog)
-	if err == nil && result.ValidationStatus == ValidationValid && len(result.AbilityRequirements) > 0 {
-		if w.normalizer == nil {
-			err = NewError("ability_normalization_unavailable", true, errors.New("JD ability normalization requires configured embeddings"))
-		} else {
-			result, err = w.normalizer.Normalize(ctx, job.UserID, creds.APIKey, creds.Model, catalog, result)
-		}
-	}
-	if err == nil && result.ValidationStatus == ValidationValid && w.classificationReview.Enabled {
-		if w.classificationReview.Reviewer == nil || w.classificationReview.APIKey == "" {
-			err = NewError("classification_review_not_configured", false, errors.New("classification review platform model is not configured"))
-		} else {
-			var reviewed ClassificationReviewResult
-			reviewed, err = w.classificationReview.Reviewer.ReviewJobClassifications(modelusage.For(ctx, job.UserID, job.ID, "jd_analysis", "platform"), w.classificationReview.APIKey, w.classificationReview.Model, job.RawText, ClassificationReviewInput{Title: result.Title, Responsibilities: result.Responsibilities, Classifications: result.Classifications, Catalog: catalog.JobCategories})
-			if err == nil {
-				result.Classifications = reviewed.Classifications
-				result.ClassificationReview = &reviewed
-			}
-		}
-	}
-	return result, err
 }

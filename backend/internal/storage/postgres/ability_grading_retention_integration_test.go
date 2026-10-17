@@ -203,11 +203,10 @@ func TestJDGradingRetentionAcrossTargetAndReanalysisIsolated(t *testing.T) {
 	}
 	assertStored("included", "succeeded", 4, 1, false, false)
 
-	// Edits preserve the previous result; deleted JDs still cascade normally.
-	if _, err := markets.UpdateRawText(ctx, userID, jdID, raw+"需要优化数据库访问。", "edited-"+jdID.String()); err != nil {
-		t.Fatal(err)
-	}
-	assertStored("processing", "queued", 4, 0, true, true)
+	// The production import keeps the previous grade as stale until the new
+	// ability stage publishes its input. It must not grade the old requirements.
+	importJDForTest(t, ctx, db, userID, targetID, raw+"需要优化数据库访问。", &jdID)
+	assertStored("processing", "succeeded", 4, 1, true, false)
 	assertNoClaim()
 }
 

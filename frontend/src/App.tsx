@@ -29,7 +29,7 @@ import {
   type SaveTargetInput,
   type UserProfileOverview,
 } from './api'
-import { navItems } from './mockData'
+import { navItems } from './navigation'
 import { KnowledgeGapsPage } from './pages/KnowledgeGapsPage'
 import { MarketPage } from './pages/MarketPage'
 import { ProjectsPage } from './pages/ProjectsPage'

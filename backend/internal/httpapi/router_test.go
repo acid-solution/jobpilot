@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/mutationlock"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
@@ -85,23 +86,11 @@ func TestUserMutationsAreLockedButAgentRequestsAreNotNested(t *testing.T) {
 	}
 }
 
-func (s marketServiceStub) Submit(context.Context, uuid.UUID, string) (market.JobDescription, error) {
-	return s.result, s.err
-}
-
-func (s marketServiceStub) SubmitBatch(context.Context, uuid.UUID, []string) (market.BatchResult, error) {
-	return market.BatchResult{}, s.err
-}
-
 func (s marketServiceStub) ListCurrent(context.Context, uuid.UUID, market.ListFilter) ([]market.JobDescription, error) {
 	return []market.JobDescription{s.result}, s.err
 }
 
 func (s marketServiceStub) Detail(context.Context, uuid.UUID, uuid.UUID) (market.JobDescription, error) {
-	return s.result, s.err
-}
-
-func (s marketServiceStub) Update(context.Context, uuid.UUID, uuid.UUID, string) (market.JobDescription, error) {
 	return s.result, s.err
 }
 
@@ -121,7 +110,7 @@ func (s marketServiceStub) ProfileCurrent(context.Context, uuid.UUID) (market.Pr
 	return market.Profile{}, s.err
 }
 
-func TestSubmitJDReturnsAcceptedProcessingResource(t *testing.T) {
+func TestSubmitJDReturnsAcceptedImport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	userID := uuid.New()
 	jdID := uuid.New()
@@ -131,6 +120,7 @@ func TestSubmitJDReturnsAcceptedProcessingResource(t *testing.T) {
 		MarketService: marketServiceStub{result: market.JobDescription{
 			ID: jdID, Status: market.StatusProcessing, JobStatus: "queued",
 		}},
+		JDImports: importServiceStub{result: jdimport.Session{ID: jdID, Status: "queued"}},
 	})
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/jds", strings.NewReader(`{"raw_text":"负责 Go 后端开发和 Agent 工具调用，要求掌握 PostgreSQL 与 Redis。"}`))
@@ -142,12 +132,12 @@ func TestSubmitJDReturnsAcceptedProcessingResource(t *testing.T) {
 		t.Fatalf("expected %d, got %d: %s", http.StatusAccepted, response.Code, response.Body.String())
 	}
 	var body struct {
-		Data market.JobDescription `json:"data"`
+		Data jdimport.Session `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Data.ID != jdID || body.Data.JobStatus != "queued" {
+	if body.Data.ID != jdID || body.Data.Status != "queued" {
 		t.Fatalf("unexpected response: %#v", body.Data)
 	}
 }
@@ -158,6 +148,7 @@ func TestSubmitJDWithoutTargetReturnsConflict(t *testing.T) {
 		IdentityResolver: identity.DevResolver{DefaultUserID: uuid.New()},
 		TargetService:    targetServiceStub{},
 		MarketService:    marketServiceStub{err: target.ErrNotFound},
+		JDImports:        importServiceStub{err: target.ErrNotFound},
 	})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/jds", strings.NewReader(`{"raw_text":"负责 Go 后端开发和 Agent 工具调用，要求掌握 PostgreSQL 与 Redis。"}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -176,6 +167,7 @@ func TestUpdateAndDeleteJDRoutes(t *testing.T) {
 		IdentityResolver: identity.DevResolver{DefaultUserID: userID},
 		TargetService:    targetServiceStub{},
 		MarketService:    marketServiceStub{result: market.JobDescription{ID: jdID, Status: market.StatusProcessing, JobStatus: "queued"}},
+		JDImports:        importServiceStub{result: jdimport.Session{ID: jdID, Status: "queued"}},
 	})
 
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/jds/"+jdID.String(), strings.NewReader(`{"raw_text":"负责 Go 后端开发，参与数据库设计、接口实现、自动化测试和线上故障排查。"}`))
@@ -201,6 +193,7 @@ func TestDuplicateJDResponseIncludesExistingID(t *testing.T) {
 		IdentityResolver: identity.DevResolver{DefaultUserID: uuid.New()},
 		TargetService:    targetServiceStub{},
 		MarketService:    marketServiceStub{err: &market.DuplicateError{ExistingID: existingID}},
+		JDImports:        importServiceStub{err: &market.DuplicateError{ExistingID: existingID}},
 	})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/jds", strings.NewReader(`{"raw_text":"负责 Go 后端开发，参与数据库设计、接口实现、自动化测试和线上故障排查。"}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -209,4 +202,14 @@ func TestDuplicateJDResponseIncludesExistingID(t *testing.T) {
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), existingID.String()) {
 		t.Fatalf("unexpected duplicate response: %d %s", response.Code, response.Body.String())
 	}
+}
+
+type importServiceStub struct {
+	JDImportService
+	result jdimport.Session
+	err    error
+}
+
+func (s importServiceStub) Start(context.Context, uuid.UUID, string, *uuid.UUID) (jdimport.Session, error) {
+	return s.result, s.err
 }

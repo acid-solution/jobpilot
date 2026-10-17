@@ -148,9 +148,6 @@ func TestJDImportReopensDeletedAndUnselectedCandidates(t *testing.T) {
 	}
 }
 
-func (a *stagedIntegrationAnalyzer) AnalyzeJD(context.Context, string, string, string, jdanalysis.Catalog) (jdanalysis.Result, error) {
-	panic("legacy analyzer must not run")
-}
 func (a *stagedIntegrationAnalyzer) ExtractJD(context.Context, string, string, string) (jdanalysis.Result, error) {
 	a.extractions++
 	return jdanalysis.Result{DocumentType: jdanalysis.DocumentJobDescription, ValidationStatus: jdanalysis.ValidationValid, Title: "后端实习", Company: "测试公司", EmploymentType: "internship", PromptVersion: jdanalysis.PromptVersion, Responsibilities: []string{"负责 Go 服务开发"}, Conditions: []string{}, AbilityRequirements: []jdanalysis.AbilityRequirement{{Operator: jdanalysis.RequirementSingle, RequiredCount: 1, RequirementKind: "required", Evidence: "熟悉 Go", Options: []jdanalysis.AbilityRequirementOption{{RawLabel: "Go", AbilityName: "Go", Evidence: "Go"}}}}}, nil

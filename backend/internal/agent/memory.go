@@ -52,9 +52,6 @@ func (s *Service) ForgetMemory(ctx context.Context, user, id uuid.UUID, w assist
 		return s.Memories.Forget(tx, user, goal, id, w.Revision, w.Hash)
 	})
 }
-func (s *Service) ResolveMemory(ctx context.Context, user, id uuid.UUID, approve bool, digest string) (p assistantmemory.Proposal, err error) {
-	return s.ResolveMemoryEdited(ctx, user, id, approve, digest, nil)
-}
 func (s *Service) ResolveMemoryEdited(ctx context.Context, user, id uuid.UUID, approve bool, digest string, edited json.RawMessage) (p assistantmemory.Proposal, err error) {
 	if !s.contextOptions().MemoryEnabled {
 		return p, assistantmemory.ErrInvalid

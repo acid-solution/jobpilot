@@ -12,7 +12,6 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/agent"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/embedding"
-	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/storage/postgres/migrations"
 	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
@@ -88,14 +87,8 @@ func TestAgentAndVectorMigrationIsolated(t *testing.T) {
 	if err = db.QueryRowContext(ctx, `SELECT status FROM jd_normalization_jobs WHERE job_description_id=$1`, oldJD).Scan(&normalizationStatus); err != nil {
 		t.Fatal(err)
 	}
-	if oldStatus != "succeeded" || preserved || oldJDStatus != "included" || normalizationStatus != "queued" {
+	if oldStatus != "succeeded" || preserved || oldJDStatus != "included" || normalizationStatus != "failed" {
 		t.Fatalf("historical JD migration lost visible result: %s %v %s %s", oldStatus, preserved, oldJDStatus, normalizationStatus)
-	}
-	if _, err = NewJDNormalizationRepository(db, NewAnalysisRepository(db), NewEmbeddingRepository(db)).ClaimNormalization(ctx); !errors.Is(err, jdanalysis.ErrNoNormalizationJob) {
-		t.Fatalf("normalization claimed a JD without user model configuration: %v", err)
-	}
-	if _, err = db.ExecContext(ctx, `UPDATE jd_normalization_jobs SET status='succeeded' WHERE job_description_id=$1`, oldJD); err != nil {
-		t.Fatal(err)
 	}
 	for _, table := range []string{"agent_conversations", "agent_messages", "agent_actions", "agent_checkpoints", "source_embeddings", "embedding_jobs", "material_reassessment_jobs", "vector_backfill_state", "jd_normalization_jobs"} {
 		var found bool
@@ -383,62 +376,6 @@ func TestAgentAndVectorMigrationIsolated(t *testing.T) {
 	}
 	if _, err = db.ExecContext(ctx, `UPDATE job_descriptions SET validation_status='valid',status='included',analysis_prompt_version='older-parser' WHERE id=$1`, jdID); err != nil {
 		t.Fatal(err)
-	}
-	normalizeRepo := NewJDNormalizationRepository(db, NewAnalysisRepository(db), vectorRepo)
-	normalizationJob, err := normalizeRepo.ClaimNormalization(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, current, err := normalizeRepo.LoadNormalization(ctx, normalizationJob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(current.AbilityRequirements) != 1 || len(current.AbilityRequirements[0].Options) != 1 || len(catalog.Abilities) == 0 {
-		t.Fatalf("existing JD options not loaded: %+v", current.AbilityRequirements)
-	}
-	current.AbilityRequirements[0].Options[0].CatalogCode = catalog.Abilities[0].Code
-	current.AbilityRequirements[0].Options[0].AbilityName = catalog.Abilities[0].Name
-	current.VectorNormalized = true
-	// A review may finish while the vector model is still running. Its result
-	// must survive the old normalizer's attempt to write its stale snapshot.
-	if _, err = db.ExecContext(ctx, `UPDATE job_description_ability_requirement_options SET
-		ability_id=(SELECT id FROM abilities WHERE code=$2),resolution_status='resolved' WHERE id=$1`,
-		optionID, catalog.Abilities[0].Code); err != nil {
-		t.Fatal(err)
-	}
-	if err = normalizeRepo.CompleteNormalization(ctx, normalizationJob, current); !errors.Is(err, jdanalysis.ErrNormalizationStateChanged) {
-		t.Fatalf("stale normalizer overwrote reviewed ability: %v", err)
-	}
-	if err = normalizeRepo.FailNormalization(ctx, normalizationJob, "state_changed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.ExecContext(ctx, `UPDATE jd_normalization_jobs SET next_attempt_at=NOW() WHERE id=$1`, normalizationJob.ID); err != nil {
-		t.Fatal(err)
-	}
-	normalizationJob, err = normalizeRepo.ClaimNormalization(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, current, err = normalizeRepo.LoadNormalization(ctx, normalizationJob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current.VectorNormalized = true
-	if err = normalizeRepo.CompleteNormalization(ctx, normalizationJob, current); err != nil {
-		t.Fatal(err)
-	}
-	var abilityCode, jdStatus, normalizationVersion string
-	if err = db.QueryRowContext(ctx, `SELECT ability.code,jd.status,jd.normalization_prompt_version FROM job_description_ability_requirement_options option
-		JOIN abilities ability ON ability.id=option.ability_id JOIN job_description_ability_requirements requirement ON requirement.id=option.requirement_id
-		JOIN job_descriptions jd ON jd.id=requirement.job_description_id WHERE option.id=$1`, optionID).
-		Scan(&abilityCode, &jdStatus, &normalizationVersion); err != nil {
-		t.Fatal(err)
-	}
-	if abilityCode != catalog.Abilities[0].Code || jdStatus != "included" || normalizationVersion != jdanalysis.NormalizationPromptVersion {
-		t.Fatalf("atomic JD normalization incomplete: %s %s %s", abilityCode, jdStatus, normalizationVersion)
-	}
-	if err = normalizeRepo.CompleteNormalization(ctx, normalizationJob, current); !errors.Is(err, jdanalysis.ErrNormalizationLeaseLost) {
-		t.Fatalf("expired normalizer could write again: %v", err)
 	}
 	if _, err = db.ExecContext(ctx, `UPDATE abilities SET embedding=$1::vector,embedding_model=$2 WHERE is_active AND source='seed'`,
 		vectorLiteral(vector), embedding.Model); err != nil {

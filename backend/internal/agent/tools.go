@@ -787,10 +787,10 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		if e := json.Unmarshal(args, &in); e != nil {
 			return nil, e
 		}
-		if s.Imports != nil {
-			return s.Imports.Start(ctx, user, in.RawText, nil)
+		if s.Imports == nil {
+			return nil, errors.New("JD import service is not configured")
 		}
-		return s.Market.Submit(ctx, user, in.RawText)
+		return s.Imports.Start(ctx, user, in.RawText, nil)
 	case "jd_batch":
 		var in struct {
 			RawTexts []string `json:"raw_texts"`
@@ -798,10 +798,10 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		if e := json.Unmarshal(args, &in); e != nil {
 			return nil, e
 		}
-		if s.Imports != nil {
-			return s.Imports.Start(ctx, user, strings.Join(in.RawTexts, "\n---\n"), nil)
+		if s.Imports == nil {
+			return nil, errors.New("JD import service is not configured")
 		}
-		return s.Market.SubmitBatch(ctx, user, in.RawTexts)
+		return s.Imports.Start(ctx, user, strings.Join(in.RawTexts, "\n---\n"), nil)
 	case "jd_edit":
 		var in struct {
 			ID      uuid.UUID `json:"id"`
@@ -810,10 +810,10 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		if e := json.Unmarshal(args, &in); e != nil {
 			return nil, e
 		}
-		if s.Imports != nil {
-			return s.Imports.Start(ctx, user, in.RawText, &in.ID)
+		if s.Imports == nil {
+			return nil, errors.New("JD import service is not configured")
 		}
-		return s.Market.Update(ctx, user, in.ID, in.RawText)
+		return s.Imports.Start(ctx, user, in.RawText, &in.ID)
 	case "jd_delete":
 		id, e := parseID(args, "id")
 		if e != nil {
@@ -827,15 +827,6 @@ func (s *Service) execute(ctx context.Context, user uuid.UUID, kind string, args
 		}
 		switch kind {
 		case "jd_retry":
-			if s.Imports != nil {
-				jd, e := s.Market.Detail(ctx, user, id)
-				if e != nil {
-					return nil, e
-				}
-				if len(jd.Analysis.Stages) == 0 {
-					return s.Imports.Start(ctx, user, jd.RawText, &id)
-				}
-			}
 			return s.Market.Retry(ctx, user, id)
 		case "jd_review_retry":
 			return s.Market.RetryAbilityReviews(ctx, user, id)

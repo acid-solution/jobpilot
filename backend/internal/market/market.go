@@ -2,8 +2,6 @@ package market
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -20,8 +18,6 @@ var (
 	ErrDuplicateJD   = errors.New("duplicate job description")
 	ErrPrecondition  = errors.New("job description is not eligible for this operation")
 )
-
-const MaxBatchSize = 50
 
 type AbilityReviewQuotaError struct{ NextAvailableAt time.Time }
 
@@ -171,32 +167,14 @@ type ListFilter struct {
 	Category string
 }
 
-type BatchItem struct {
-	Index        int             `json:"index"`
-	Status       string          `json:"status"`
-	JD           *JobDescription `json:"jd,omitempty"`
-	ExistingID   *uuid.UUID      `json:"existing_jd_id,omitempty"`
-	ErrorCode    string          `json:"error_code,omitempty"`
-	ErrorMessage string          `json:"error_message,omitempty"`
-}
-
-type BatchResult struct {
-	CreatedCount   int         `json:"created_count"`
-	DuplicateCount int         `json:"duplicate_count"`
-	InvalidCount   int         `json:"invalid_count"`
-	Items          []BatchItem `json:"items"`
-}
-
 type DuplicateError struct{ ExistingID uuid.UUID }
 
 func (e *DuplicateError) Error() string { return ErrDuplicateJD.Error() }
 func (e *DuplicateError) Unwrap() error { return ErrDuplicateJD }
 
 type Repository interface {
-	CreateWithAnalysisJob(context.Context, uuid.UUID, uuid.UUID, string, string) (JobDescription, error)
 	ListByTarget(context.Context, uuid.UUID, uuid.UUID, ListFilter) ([]JobDescription, error)
 	FindByID(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error)
-	UpdateRawText(context.Context, uuid.UUID, uuid.UUID, string, string) (JobDescription, error)
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
 	RetryAnalysis(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error)
 	RetryAbilityReviews(context.Context, uuid.UUID, uuid.UUID) (JobDescription, error)
@@ -215,66 +193,6 @@ type Service struct {
 
 func NewService(repository Repository, targetService CurrentTargetReader) *Service {
 	return &Service{repository: repository, targetService: targetService}
-}
-
-func (s *Service) Submit(ctx context.Context, userID uuid.UUID, rawText string) (JobDescription, error) {
-	rawText = canonicalRawText(rawText)
-	if err := ValidateJDText(rawText); err != nil {
-		return JobDescription{}, err
-	}
-	currentTarget, err := s.targetService.Current(ctx, userID)
-	if err != nil {
-		return JobDescription{}, err
-	}
-	if currentTarget.CatalogStatus != target.CatalogStatusValid {
-		return JobDescription{}, target.ErrNeedsReselection
-	}
-	return s.repository.CreateWithAnalysisJob(ctx, userID, currentTarget.ID, rawText, hashRawText(rawText))
-}
-
-func (s *Service) SubmitBatch(ctx context.Context, userID uuid.UUID, rawTexts []string) (BatchResult, error) {
-	if len(rawTexts) == 0 || len(rawTexts) > MaxBatchSize {
-		return BatchResult{}, ErrValidation
-	}
-	currentTarget, err := s.targetService.Current(ctx, userID)
-	if err != nil {
-		return BatchResult{}, err
-	}
-	if currentTarget.CatalogStatus != target.CatalogStatusValid {
-		return BatchResult{}, target.ErrNeedsReselection
-	}
-	result := BatchResult{Items: make([]BatchItem, 0, len(rawTexts))}
-	seen := make(map[string]uuid.UUID)
-	for index, input := range rawTexts {
-		rawText := canonicalRawText(input)
-		if err := ValidateJDText(rawText); err != nil {
-			result.InvalidCount++
-			result.Items = append(result.Items, BatchItem{Index: index, Status: "invalid", ErrorCode: "invalid_jd_text", ErrorMessage: "请粘贴完整的岗位说明"})
-			continue
-		}
-		hash := hashRawText(rawText)
-		if existingID, duplicate := seen[hash]; duplicate {
-			result.DuplicateCount++
-			result.Items = append(result.Items, BatchItem{Index: index, Status: "duplicate", ExistingID: &existingID})
-			continue
-		}
-		created, err := s.repository.CreateWithAnalysisJob(ctx, userID, currentTarget.ID, rawText, hash)
-		if err != nil {
-			var duplicate *DuplicateError
-			if errors.As(err, &duplicate) {
-				result.DuplicateCount++
-				result.Items = append(result.Items, BatchItem{Index: index, Status: "duplicate", ExistingID: &duplicate.ExistingID})
-				seen[hash] = duplicate.ExistingID
-				continue
-			}
-			return BatchResult{}, err
-		}
-		result.CreatedCount++
-		seen[hash] = created.ID
-		createdCopy := created
-		result.Items = append(result.Items, BatchItem{Index: index, Status: "created", JD: &createdCopy})
-	}
-	return result, nil
 }
 
 func (s *Service) ListCurrent(ctx context.Context, userID uuid.UUID, filter ListFilter) ([]JobDescription, error) {
@@ -302,14 +220,6 @@ func (s *Service) Retry(ctx context.Context, userID, jdID uuid.UUID) (JobDescrip
 	return s.repository.RetryAnalysis(ctx, userID, jdID)
 }
 
-func (s *Service) Update(ctx context.Context, userID, jdID uuid.UUID, rawText string) (JobDescription, error) {
-	rawText = canonicalRawText(rawText)
-	if err := ValidateJDText(rawText); err != nil {
-		return JobDescription{}, err
-	}
-	return s.repository.UpdateRawText(ctx, userID, jdID, rawText, hashRawText(rawText))
-}
-
 func (s *Service) Delete(ctx context.Context, userID, jdID uuid.UUID) error {
 	return s.repository.Delete(ctx, userID, jdID)
 }
@@ -320,17 +230,6 @@ func (s *Service) RetryAbilityReviews(ctx context.Context, userID, jdID uuid.UUI
 
 func (s *Service) RetryAbilityGrading(ctx context.Context, userID, jdID uuid.UUID) (JobDescription, error) {
 	return s.repository.RetryAbilityGrading(ctx, userID, jdID)
-}
-
-func canonicalRawText(value string) string {
-	value = strings.ReplaceAll(value, "\r\n", "\n")
-	value = strings.ReplaceAll(value, "\r", "\n")
-	return strings.TrimSpace(value)
-}
-
-func hashRawText(value string) string {
-	digest := sha256.Sum256([]byte(canonicalRawText(value)))
-	return hex.EncodeToString(digest[:])
 }
 
 func (s *Service) ProfileCurrent(ctx context.Context, userID uuid.UUID) (Profile, error) {

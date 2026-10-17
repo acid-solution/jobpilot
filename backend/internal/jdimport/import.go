@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
@@ -93,8 +92,8 @@ type Service struct {
 }
 
 func (s *Service) Start(ctx context.Context, user uuid.UUID, raw string, replacement *uuid.UUID) (Session, error) {
-	if strings.TrimSpace(raw) == "" || len([]rune(raw)) > 100000 {
-		return Session{}, market.ErrInvalidJDText
+	if err := market.ValidateJDText(raw); err != nil {
+		return Session{}, err
 	}
 	t, err := s.Targets.Current(ctx, user)
 	if err != nil {

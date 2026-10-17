@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -20,7 +21,29 @@ func importError(c *gin.Context, err error) {
 		handleError(c, err)
 	}
 }
-func registerJDImports(api *gin.RouterGroup, service *jdimport.Service) {
+
+type JDImportService interface {
+	Start(context.Context, uuid.UUID, string, *uuid.UUID) (jdimport.Session, error)
+	Get(context.Context, uuid.UUID, uuid.UUID) (jdimport.Session, error)
+	List(context.Context, uuid.UUID) ([]jdimport.Session, error)
+	Confirm(context.Context, uuid.UUID, uuid.UUID, []uuid.UUID) (jdimport.Session, error)
+	Retry(context.Context, uuid.UUID, uuid.UUID) (jdimport.Session, error)
+}
+
+func startJDImport(c *gin.Context, service JDImportService, raw string, replacement *uuid.UUID) {
+	if service == nil {
+		writeError(c, http.StatusServiceUnavailable, "jd_import_unavailable", "JD 导入服务未配置")
+		return
+	}
+	out, err := service.Start(c, identity.UserID(c), raw, replacement)
+	if err != nil {
+		importError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": out})
+}
+
+func registerJDImports(api *gin.RouterGroup, service JDImportService) {
 	api.POST("/jd-imports", func(c *gin.Context) {
 		var input struct {
 			Raw         string     `json:"raw_text"`

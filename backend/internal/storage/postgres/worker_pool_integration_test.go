@@ -20,7 +20,7 @@ type concurrentAnalyzer struct {
 	calls   map[string]int
 }
 
-func (a *concurrentAnalyzer) AnalyzeJD(ctx context.Context, _, _, text string, _ jdanalysis.Catalog) (jdanalysis.Result, error) {
+func (a *concurrentAnalyzer) ExtractJD(ctx context.Context, _, _, text string) (jdanalysis.Result, error) {
 	a.mu.Lock()
 	a.calls[text]++
 	a.mu.Unlock()
@@ -170,4 +170,8 @@ func TestConcurrentReviewWorkersDoNotExceedQuota(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (a *concurrentAnalyzer) ClassifyJD(_ context.Context, _, _, _ string, result jdanalysis.Result, _ jdanalysis.Catalog) ([]jdanalysis.JobClassification, error) {
+	return result.Classifications, nil
 }

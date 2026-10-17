@@ -57,10 +57,7 @@ func TestMarketRepositoryJDManagement(t *testing.T) {
 	}
 
 	edited := "负责 Go 服务端架构与接口开发，参与缓存设计、可观测性建设、自动化测试和故障排查。"
-	updated, err := repository.UpdateRawText(ctx, userID, created.ID, edited, testJDHash(edited))
-	if err != nil {
-		t.Fatal(err)
-	}
+	updated := importJDForTest(t, ctx, database, userID, targetID, edited, &created.ID)
 	if updated.RawText != edited || updated.JobStatus != "queued" || updated.Status != market.StatusProcessing || updated.ValidationStatus != "pending" {
 		t.Fatalf("edited JD was not reset and queued: %#v", updated)
 	}

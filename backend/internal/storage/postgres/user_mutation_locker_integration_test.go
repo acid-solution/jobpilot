@@ -13,6 +13,7 @@ import (
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/httpapi"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/identity"
+	"github.com/LeoninCS/jobpilot-next/backend/internal/jdimport"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/market"
 	"github.com/LeoninCS/jobpilot-next/backend/internal/target"
 	"github.com/gin-gonic/gin"
@@ -50,6 +51,7 @@ func TestHTTPMutationsDoNotWaitOnTheirOwnLockIsolated(t *testing.T) {
 		MutationLocker:   locker,
 		TargetService:    targets,
 		MarketService:    markets,
+		JDImports:        &jdimport.Service{Repo: NewJDImportRepository(db), Targets: targets},
 	})
 	put := func(t *testing.T, path string, body any, wantStatus int) {
 		t.Helper()
@@ -81,7 +83,12 @@ func TestHTTPMutationsDoNotWaitOnTheirOwnLockIsolated(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	jd, err := markets.Submit(ctx, user, "招聘 Go 后端实习生，负责接口开发，要求熟悉 Go 和 PostgreSQL。")
+	current, err := targets.Current(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := "招聘 Go 后端实习生，负责接口开发，要求熟悉 Go 和 PostgreSQL。"
+	jd, err := NewMarketRepository(db).CreateWithAnalysisJob(ctx, user, current.ID, raw, sourceHash(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

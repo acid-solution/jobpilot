@@ -356,21 +356,9 @@ func TestJDParsedReuseEnqueuesAliasReviewIsolated(t *testing.T) {
 		t.Fatalf("JD not included before alias review: %s %v", status, err)
 	}
 
-	normalizationID, normalizationLease := uuid.New(), uuid.New()
-	exec(`INSERT INTO jd_normalization_jobs(id,user_id,job_description_id,source_hash,status,lease_token,lease_expires_at) VALUES($1,$2,$3,encode(digest($4,'sha256'),'hex'),'running',$5,NOW()+INTERVAL '5 minutes')
-		ON CONFLICT(job_description_id) DO UPDATE SET id=EXCLUDED.id,status=EXCLUDED.status,lease_token=EXCLUDED.lease_token,lease_expires_at=EXCLUDED.lease_expires_at,source_hash=EXCLUDED.source_hash`, normalizationID, user, jd, quote, normalizationLease)
-	normalizationJob := jdanalysis.NormalizationJob{ID: normalizationID, UserID: user, JobDescriptionID: jd, SourceHash: materialHash(quote), LeaseToken: normalizationLease}
-	normalization := NewJDNormalizationRepository(db, analysis, nil)
-	_, loaded, err := normalization.LoadNormalization(ctx, normalizationJob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.AbilityRequirements[0].Options[0].NormalizationReason != "本句中表示 Go" {
-		t.Fatal("normalization reason wasn't persisted")
-	}
-	loaded.VectorNormalized = true
-	if err := normalization.CompleteNormalization(ctx, normalizationJob, loaded); err != nil {
-		t.Fatal(err)
+	var mappingReason string
+	if err := db.QueryRowContext(ctx, `SELECT normalization_reason FROM job_description_ability_requirement_options option JOIN job_description_ability_requirements requirement ON requirement.id=option.requirement_id WHERE requirement.job_description_id=$1`, jd).Scan(&mappingReason); err != nil || mappingReason != "本句中表示 Go" {
+		t.Fatalf("normalization reason lost: %q %v", mappingReason, err)
 	}
 	review := NewAbilityReviewRepository(db)
 	input, err := review.Claim(ctx, time.Minute*5)

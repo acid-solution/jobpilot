@@ -64,13 +64,13 @@ func (s *classificationReviewerStub) ReviewJobClassifications(context.Context, s
 	return s.result, s.err
 }
 
-func (s analyzerStub) AnalyzeJD(context.Context, string, string, string, Catalog) (Result, error) {
+func (s analyzerStub) ExtractJD(context.Context, string, string, string) (Result, error) {
 	return s.result, s.err
 }
 
 type blockingAnalyzerStub struct{}
 
-func (blockingAnalyzerStub) AnalyzeJD(ctx context.Context, _, _, _ string, _ Catalog) (Result, error) {
+func (blockingAnalyzerStub) ExtractJD(ctx context.Context, _, _, _ string) (Result, error) {
 	<-ctx.Done()
 	return Result{}, ctx.Err()
 }
@@ -99,7 +99,7 @@ func TestWorkerDoesNotPersistUnnormalizedJDAbilities(t *testing.T) {
 		Options: []AbilityRequirementOption{{RawLabel: "Go", Evidence: "Go"}},
 	}}}}, time.Second)
 	worked, err := worker.ProcessOnce(context.Background())
-	if err != nil || !worked || repository.failedCode != "ability_normalization_unavailable" || !repository.failedRetry || repository.completed != nil {
+	if err != nil || !worked || repository.failedCode != "ability_normalization_unavailable" || repository.failedRetry || repository.completed != nil {
 		t.Fatalf("unnormalized JD must fail visibly: worked=%v err=%v code=%s completed=%v", worked, err, repository.failedCode, repository.completed)
 	}
 }
@@ -112,7 +112,7 @@ func TestWorkerUsesIndependentClassificationReviewForValidJD(t *testing.T) {
 	}}
 	worker := NewWorker(repository, credentialStub{credentials: modelconfig.Credentials{
 		Provider: "deepseek", Model: "deepseek-flash", APIKey: "user-secret",
-	}}, analyzerStub{result: Result{ValidationStatus: ValidationValid, Title: "后端实习生", Responsibilities: []string{"开发业务服务"}}}, time.Second,
+	}}, analyzerStub{result: Result{ValidationStatus: ValidationValid, Title: "后端实习生", Responsibilities: []string{"开发业务服务"}, Classifications: []JobClassification{{Candidate: &JobClassificationCandidate{Scope: "specialty"}}}}}, time.Second,
 		ClassificationReviewConfig{Enabled: true, Reviewer: reviewer, APIKey: "platform-secret", Model: "deepseek-chat"})
 
 	worked, err := worker.ProcessOnce(context.Background())
@@ -183,4 +183,17 @@ func TestWorkerScansForExpiredJobsAfterStartup(t *testing.T) {
 	if calls := repository.recoveryCalls.Load(); calls < 2 {
 		t.Fatalf("expected startup and periodic recovery, got %d calls", calls)
 	}
+}
+
+func (r *repositoryStub) LoadStage(context.Context, Job, string) (Result, bool, error) {
+	return Result{}, false, nil
+}
+func (r *repositoryStub) SaveStage(context.Context, Job, string, string, Result, string, ...bool) error {
+	return nil
+}
+func (s analyzerStub) ClassifyJD(context.Context, string, string, string, Result, Catalog) ([]JobClassification, error) {
+	return s.result.Classifications, s.err
+}
+func (blockingAnalyzerStub) ClassifyJD(context.Context, string, string, string, Result, Catalog) ([]JobClassification, error) {
+	return nil, nil
 }

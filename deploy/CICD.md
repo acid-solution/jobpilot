@@ -1,57 +1,89 @@
-# CI/CD
+# CI/CD、发布与恢复
 
-GitHub Actions 在 push、PR 和手动触发时执行检查。只有受信任的 main 构建会发布镜像；PR 不获取 SSH 凭证，也不发布镜像或连接服务器。第三方 Action 固定到提交 SHA。
+核对日期：2026-10-17。流程以[ci.yml](../.github/workflows/ci.yml)、[verify-ssh.yml](../.github/workflows/verify-ssh.yml)和 [release.sh](release.sh)为准。
 
-## CI
+## 检查与镜像
 
-- JobPilot：临时 PostgreSQL 17＋pgvector；先运行 `TestMigrationsSmoke` 建好普通集成测试库，再运行 `go test -race -count=1 -v ./...` 和 `go vet ./...`。`JOBPILOT_TEST_DATABASE_URL`、`TEST_DATABASE_URL` 指向该测试库；`JOBPILOT_ADMIN_DATABASE_URL` 指向同一临时实例的 postgres 库，供隔离测试建库。真实模型测试默认关闭。
-- 前端执行 `npm test`、类型检查和生产构建；测试覆盖学习路线准备条件、未就绪入口及首次加载状态。
-- 部署脚本测试在独立、无网络的容器中验证配置生成、单服务发布、发布失败、备份失败及两个仓库同时发布的锁。Docker CLI 使用测试替代实现；不能把这些结果当成真实服务器发布验收。
-- 构建 linux/amd64 镜像。main 成功后发布 `ghcr.io/acid-solution/jobpilot:<commit>`，运行摘要记录不可变 digest。
-- shared-auth 固定源码提交 `246e0a27fb90401dd58817339b4df4d868d31b2b`，构建为 `ghcr.io/acid-solution/jobpilot-auth`。首次部署固定其 digest；日常应用发布不更新认证服务。
+push、PR、手动触发均执行 CI，第三方 Action 固定提交。JobPilot 流水线包括：
 
-## GitHub 配置
+1. 临时 PostgreSQL 17 + pgvector，先运行迁移 smoke，再运行 Go race、数据库集成和 vet。
+2. 前端依赖安装、普通测试、安装 Chromium、显式开启无头假接口验收、类型检查与构建。
+3. 无网络容器中的部署脚本替身测试，检查生成、备份失败、发布失败与服务器锁。
+4. 构建 linux/amd64 镜像。只有受信任 main 发布到 GHCR，PR 不读取 SSH 凭据、不发布或连接服务器。
+
+认证依赖固定源码提交 `246e0a27fb90401dd58817339b4df4d868d31b2b` 并发布为 `jobpilot-auth`。首次部署固定 digest，日常单应用发布不替换认证。
+
+工作流摘要记录不可变镜像引用，不使用 latest 作为发布依据。
+
+## GitHub 与服务器配置
 
 两个应用仓库各配置：
 
-| 类型 | 名称 | 内容 |
+| 类型 | 名称 | 用途 |
 | --- | --- | --- |
 | Secret | `DEPLOY_SSH_KEY` | 专用部署私钥 |
-| Secret | `DEPLOY_KNOWN_HOSTS` | 已从服务器 root 终端核对的主机公钥记录 |
-| Variable | `DEPLOY_HOST` | 部署服务器地址 |
-| Variable | `DEPLOY_PORT` | SSH 端口 |
-| Variable | `DEPLOY_USER` | 专用部署账号，例如 `acidsolution-deploy` |
-| Variable | `DEPLOY_PATH` | `/srv/jobpilot-stack/jobpilot/deploy` |
-| Variable | `DEPLOY_ENABLED` | 初始为 `false`；联合栈首次验收通过后改为 `true` |
+| Secret | `DEPLOY_KNOWN_HOSTS` | 已独立核对的主机公钥 |
+| Variable | `DEPLOY_HOST`、`DEPLOY_PORT` | 目标主机与 SSH 端口 |
+| Variable | `DEPLOY_USER` | 专用部署账号 |
+| Variable | `DEPLOY_PATH` | 如 `/srv/jobpilot-stack/jobpilot/deploy` |
+| Variable | `DEPLOY_ENABLED` | 明确为 true 才开启自动发布 |
 
-部署 job 使用 `production` environment；可在 GitHub 设置允许发布的分支和人工审核。部署关闭时仍执行 CI 和镜像发布，不会连接服务器。
+部署使用 `production` environment。首次启用前应完成初始化与业务验收；当前服务器是否启用以其配置为准，不能由示例默认值推断。
 
-另外提供手动触发的 `Verify SSH` 工作流：它只在 main 使用专用凭证核验服务器身份并读取登录用户名，不启动程序或修改服务器，可在 Docker 和网站准备完成前验证 GitHub 到服务器的实际连通性。
+手动 Verify SSH 工作流只核验连接与用户名，不部署。GHCR 镜像权限需使服务器能够拉取；私有包使用限权服务器凭据，不写入仓库。
 
-GHCR 新包默认可能是私有的。上线前确认服务器能拉取三个固定 digest：公开镜像可匿名拉取；保留私有时，在服务器配置专用、仅有 `read:packages` 的凭证，不使用个人的全权限 Token。不要把密码或 Token 放进仓库。镜像能否下载必须在目标服务器实测。
+## 首次准备
 
-## 服务器准备与首次部署
+Ubuntu 准备脚本以 root 先运行检查，再显式应用：
 
-1. 使用 root 先运行 `bash prepare-cd-server.sh --check`，检查计划；再运行 `--apply`。脚本通过 Docker 官方 Ubuntu APT 仓库安装 Docker/Compose，创建 `/srv/jobpilot-stack`，把部署账号加入 docker 组。不启动网站，不修改防火墙，不覆盖现有 Docker daemon 配置。**docker 组具有接近 root 的主机控制能力**；脚本不添加无限制 sudo。
-   如果服务器访问 Docker 官方源被重置，可改用 `DOCKER_APT_MIRROR=aliyun bash prepare-cd-server.sh --apply`，使用[阿里云提供的 Docker CE 镜像](https://developer.aliyun.com/mirror/docker-ce/)。仅接受这两个固定来源；下载的公钥须与已核对的 Docker 官方公钥 SHA-256 一致，APT 包签名验证始终开启。公钥轮换时需先核对官方更新，再更新脚本中的摘要。
-2. 重新连接部署账号，核验 `docker info` 与 `docker compose version`。将本仓库放到 `/srv/jobpilot-stack/jobpilot`。镜像部署无需另外克隆应用源码到 StudyFlow 目录。
-3. 按 `JOINT_DEPLOYMENT.md` 配置服务器专用 `.env.joint`，运行 `generate-secrets.sh .env.joint`，补齐邮件、模型、域名等实际配置。保留已有密钥和数据。
-4. 复制 `.env.images.example` 为 `.env.images`，填入两个应用及认证的成功构建摘要中的完整 digest，不能填 latest 或占位符。
-5. 在基础、联合配置后叠加 `compose.images.yaml`。生产例子：
+~~~bash
+bash prepare-cd-server.sh --check
+bash prepare-cd-server.sh --apply
+~~~
 
-   ```bash
-   docker compose --env-file .env.joint --env-file .env.images \
-     -f compose.yaml -f compose.joint.yaml -f compose.images.yaml \
-     up -d --no-build --wait --wait-timeout 240
-   ```
+它要求既有专用部署账号，安装缺少的 Docker/Compose、准备目录并加入 docker 组；保留既有 daemon 配置，不启动网站或改防火墙。docker 组具有广泛主机控制权限。可选镜像参数、版本与签名约束以脚本为准。
 
-6. 无域名时先按联合部署文档进行 SSH 隧道联调：在 images 配置之前加 `compose.joint.http-test.yaml`，并创建空文件 `.cd-http-test` 让发布脚本使用相同组合。该配置默认只监听回环地址；公开 IP HTTP、TLS、备案、真实邮件及模型凭证必须另行验收，不能因 CI 通过就默认可以公网使用。
-7. 验证两网站、登录、关键业务与授权后的学习路线导入，再启用两个仓库的 `DEPLOY_ENABLED=true`。必须先完成一次联合栈初始化；自动发布不会替你猜测首次配置或初始化数据库。
+按[联合部署](JOINT_DEPLOYMENT.md)准备 `.env.joint`。镜像方式不需要另克隆应用源码到两个构建目录：
 
-## 自动更新和恢复
+~~~bash
+test -f .env.images || cp .env.images.example .env.images
+~~~
 
-`release.sh` 只接受本项目的 `image@sha256:<64位摘要>`，两个仓库通过同一个服务器文件锁串行发布。它拉取镜像、备份对应业务库、仅更新目标应用容器，再检查健康接口和首页。通过后才原子写入 `.env.images` 和发布历史。认证、数据库及 Caddy 不随单个应用发布重建。
+填入两个应用及认证各自成功 CI 的完整 `image@sha256:<64位摘要>`，然后：
 
-备份和失败日志保存在服务器 `deploy/.release-state/`，权限为私有，不上传到 GitHub；应另行制定保留周期和异机备份策略。发布失败时保留原镜像清单、数据库备份和失败日志，流水线标红。失败后的实际容器可能已被替换，旧清单不等于旧程序已恢复。
+~~~bash
+docker compose --env-file .env.joint --env-file .env.images -f compose.yaml -f compose.joint.yaml -f compose.images.yaml config --quiet
+docker compose --env-file .env.joint --env-file .env.images -f compose.yaml -f compose.joint.yaml -f compose.images.yaml up -d --no-build --wait --wait-timeout 240
+~~~
 
-数据库迁移随应用启动执行，脚本不自动降级数据库或假定旧程序一定兼容。确认数据库结构与旧版本兼容后，可用历史成功摘要重新执行 `bash release.sh jobpilot <previous-image-digest>`；不兼容时先制定数据恢复方案。健康和首页检查不等于完整业务端到端验收，正式发布还需相应业务测试。
+HTTP 隔离联调在 images 前叠加 `compose.joint.http-test.yaml`，并在本目录创建空文件 `.cd-http-test`，保证后续脚本使用同一组合。正式域名模式不使用该标记。
+
+## 单应用发布
+
+~~~bash
+bash release.sh jobpilot 'ghcr.io/acid-solution/jobpilot@sha256:<实际64位摘要>'
+bash release.sh studyflow 'ghcr.io/acid-solution/studyflow@sha256:<实际64位摘要>'
+~~~
+
+以上占位摘要需替换，脚本只接受对应仓库的不可变引用。两个项目使用同一个服务器文件锁串行执行：
+
+1. 核对环境、镜像清单和已初始化服务。
+2. 拉取指定镜像。
+3. 备份对应业务库至私有 `.release-state/backups`。
+4. 仅替换指定应用，不重建认证、数据库或 Caddy。
+5. 检查容器、数据库健康与首页。
+6. 成功后原子更新 `.env.images` 并记录历史。
+
+备份失败停止发布；失败时保存日志、旧镜像清单和备份，不报告成功。保留旧清单不说明实际旧容器已经恢复。
+
+## 备份与回退
+
+发布前备份只覆盖本次目标业务库，不自动覆盖全部认证库、JWT 私钥和资料加密密钥，也不等于周期异机备份。为这些对象分别安排保留与恢复演练。
+
+数据库迁移随新应用启动，失败后实际数据库可能已改变。先核对迁移与旧应用兼容性，再决定重新发布旧成功 digest；脚本不自动降级数据库。
+
+备份恢复应先在新建隔离库验证，再明确切换窗口和数据取舍。Down 迁移不是数据恢复，不能用删卷重建代替保留业务数据。
+
+## 验证范围
+
+无网络脚本测试只使用 Docker 替身，不证明 SSH、证书、邮件、镜像下载或模型可用。CI、部署健康、首页和业务端到端分别记录，入口见[验证指南](../docs/VALIDATION.md)。

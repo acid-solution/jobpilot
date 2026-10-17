@@ -5143,6 +5143,22 @@ textarea:focus-visible {
 .agent-context-warning{font-size:11px;color:#8a5a12;background:#fff8e8;border-radius:6px;padding:6px 8px;margin-bottom:8px}
 
 .jd-import-panel { margin-bottom: 18px; }
+.jd-import-empty-dialog {
+  width: min(440px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 20px 64px var(--shadow);
+}
+.jd-import-empty-dialog::backdrop { background: rgb(17 25 39 / 35%); }
+.jd-import-empty-dialog header { display: flex; align-items: center; justify-content: space-between; }
+.jd-import-empty-icon { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 12px; color: var(--primary); background: var(--primary-soft); }
+.jd-import-empty-dialog h2 { margin: 18px 0 10px; font-size: 19px; font-weight: 500; }
+.jd-import-empty-dialog p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.8; }
+.jd-import-empty-dialog footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .jd-import-candidates { display: grid; gap: 14px; padding: 18px; }
 .jd-import-candidate { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--border-color, #e2e7f0); border-radius: 10px; }
 .jd-import-candidate > div { flex: 1; min-width: 0; }

@@ -361,22 +361,89 @@ test('a late polling response cannot overwrite newer state; returning to the pag
   } finally { await context.close() }
 })
 
-test('novel text stays a normal empty result without creating a formal JD', { skip: !enabled, timeout: 30000 }, async () => {
+test('empty imports show one dismissible modal, without a permanent card or repeat on refresh', { skip: !enabled, timeout: 30000 }, async () => {
   const context = await browser.newContext()
   try {
     const page = await context.newPage()
+    let reads = 0
     await page.route('**/api/v1/**', route => {
       const path = new URL(route.request().url()).pathname
       if (path === '/api/v1/jds') return respond(route, [])
-      if (path === '/api/v1/jd-imports') return respond(route, [{ ...session, status: 'empty', candidates: [] }])
+      if (path === '/api/v1/jd-imports') {
+        reads++
+        return respond(route, [{ ...session, status: 'empty', candidates: [] }, { ...session, id: 'another-empty', status: 'empty', candidates: [] }])
+      }
       if (path === '/api/v1/market-profile') return respond(route, profile(false))
       throw new Error(`Unexpected API ${path}`)
     })
     await page.goto(baseURL)
-    await page.getByRole('heading', { name: '未识别到有效 JD' }).waitFor()
+    const modal = page.getByRole('alertdialog', { name: '未识别到有效 JD' })
+    await modal.waitFor()
+    assert.match(await modal.innerText(), /有 2 份材料/)
+    assert.match(await modal.innerText(), /不会计入市场画像/)
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
     assert.equal(await page.getByRole('checkbox').count(), 0)
     assert.equal(await page.getByRole('button', { name: '重新识别' }).count(), 0)
     assert.equal(await page.locator('.jd-row').count(), 0)
+    await page.keyboard.press('Escape')
+    await modal.waitFor({ state: 'detached' })
+    await page.getByText('还没有 JD。可粘贴招聘网页文字开始建立市场画像。', { exact: true }).waitFor()
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForFunction(() => document.querySelector('.market-empty')?.textContent?.includes('还没有 JD'))
+    // A reload keeps acknowledgements in this tab, without retaining any material text.
+    await page.reload()
+    await page.locator('.market-empty').waitFor()
+    assert.equal(await modal.count(), 0)
+    const settledReads = reads
+    await page.waitForTimeout(2200)
+    assert.equal(reads, settledReads, 'terminal empty results must not keep polling')
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
+  } finally { await context.close() }
+})
+
+test('async empty results clear processing notices and explicit resubmissions open a new reminder', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    let imports = [], finish = false, submissions = 0
+    await page.route('**/api/v1/**', route => {
+      const request = route.request(), path = new URL(request.url()).pathname
+      if (path === '/api/v1/jds') return respond(route, [])
+      if (path === '/api/v1/market-profile') return respond(route, profile(false))
+      if (path === '/api/v1/jd-imports' && request.method() === 'POST') {
+        submissions++
+        // Identical material can reuse a terminal empty session on the server.
+        const result = { ...session, status: submissions === 1 ? 'running' : 'empty', candidates: [], has_pending: submissions === 1, next_poll_ms: 2000 }
+        imports = [result]
+        return respond(route, result, 202)
+      }
+      if (path === '/api/v1/jd-imports') return respond(route, finish ? imports.map(item => ({ ...item, status: 'empty', has_pending: false })) : imports)
+      throw new Error(`Unexpected API ${path}`)
+    })
+    await page.goto(baseURL)
+    await page.getByRole('button', { name: '添加 JD', exact: true }).click()
+    await page.getByLabel('招聘材料', { exact: true }).fill(raw)
+    await page.getByRole('button', { name: '保存并识别岗位' }).click()
+    await page.getByRole('heading', { name: '正在识别岗位内容' }).waitFor()
+    assert.match(await page.locator('.market-notice').innerText(), /正在识别岗位/)
+    finish = true
+    const modal = page.getByRole('alertdialog', { name: '未识别到有效 JD' })
+    await modal.waitFor()
+    assert.equal(await page.locator('.market-notice').count(), 0)
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
+    await modal.getByRole('button', { name: '重新粘贴' }).click()
+    await modal.waitFor({ state: 'detached' })
+    await page.getByLabel('招聘材料', { exact: true }).fill(raw)
+    await page.getByRole('button', { name: '保存并识别岗位' }).click()
+    await modal.waitFor()
+    assert.equal(submissions, 2)
+    assert.equal(await page.locator('.market-notice').count(), 0)
+    await modal.getByRole('button', { name: '关闭提醒' }).click()
+    await modal.waitFor({ state: 'detached' })
+    await page.reload()
+    await page.locator('.market-empty').waitFor()
+    assert.equal(await modal.count(), 0)
+    assert.equal(await page.locator('.jd-import-panel').count(), 0)
   } finally { await context.close() }
 })
 

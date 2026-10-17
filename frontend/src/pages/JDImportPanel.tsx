@@ -8,9 +8,10 @@ export function JDImportPanel({ session, onConfirm, onRetry }: { session: JDImpo
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const run = async (action: () => Promise<void>) => { if (busy) return; setBusy(true); setError(''); try { await action() } catch (e) { setError(e instanceof Error ? e.message : '操作失败') } finally { setBusy(false) } }
+  if (session.status === 'empty' || session.status === 'confirmed') return null
   return <section className="market-panel jd-import-panel" aria-label="岗位识别结果">
-    <header className="market-panel-head"><div><h2>{session.status === 'empty' ? '未识别到有效 JD' : session.status === 'failed' ? '岗位识别暂时失败' : session.status === 'ready' ? `识别到 ${session.candidates.length} 个岗位，请选择` : '正在识别岗位内容'}</h2>
-      <p>{session.status === 'empty' ? '这段文字没有可识别的招聘职责或要求，可以添加其他材料。' : session.status === 'failed' ? errors[session.error_code ?? ''] ?? '本次识别未完成，材料已保存，可以重试。' : session.status === 'ready' ? session.replacement_jd_id ? '选择一份用于更新原 JD，原记录编号会保留。' : '确认后只导入所选岗位，原始材料会保留。' : '系统正在从原始文本中查找岗位，导航、广告和无关内容会被忽略。'}</p>
+    <header className="market-panel-head"><div><h2>{session.status === 'failed' ? '岗位识别暂时失败' : session.status === 'ready' ? `识别到 ${session.candidates.length} 个岗位，请选择` : '正在识别岗位内容'}</h2>
+      <p>{session.status === 'failed' ? errors[session.error_code ?? ''] ?? '本次识别未完成，材料已保存，可以重试。' : session.status === 'ready' ? session.replacement_jd_id ? '选择一份用于更新原 JD，原记录编号会保留。' : '确认后只导入所选岗位，原始材料会保留。' : '系统正在从原始文本中查找岗位，导航、广告和无关内容会被忽略。'}</p>
     </div></header>
     {session.status === 'ready' && <div className="jd-import-candidates">{session.candidates.map(candidate => <label className="jd-import-candidate" key={candidate.id}>
       <input type={session.replacement_jd_id ? 'radio' : 'checkbox'} name={`candidate-${session.id}`} checked={selected.includes(candidate.id)} disabled={busy || !!candidate.jd_id} onChange={event => setSelected(current => session.replacement_jd_id ? [candidate.id] : event.target.checked ? [...current, candidate.id] : current.filter(id => id !== candidate.id))} />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   ArrowRight,
@@ -18,6 +18,7 @@ import {
 import { jobPilotAPI, type JobDescription, type MarketAbilitySummary } from '../api'
 import { useMarketData } from './useMarketData'
 import { JDImportPanel } from './JDImportPanel'
+import { JDImportEmptyNotice, useJDImportFeedback } from './JDImportEmptyNotice'
 
 type MarketTab = 'jobs' | 'abilities'
 type DrawerMode = 'add' | 'edit' | 'detail' | 'ability' | null
@@ -212,6 +213,8 @@ export function MarketPage() {
   const samples = useMemo(() => data.items.map(mapJD), [data.items])
   const allSamples = useMemo(() => data.all.map(mapJD), [data.all])
   const [notice, setNotice] = useState('')
+  const clearNotice = useCallback(() => setNotice(''), [])
+  const importFeedback = useJDImportFeedback(imports, clearNotice)
   const [submitting, setSubmitting] = useState(false)
   const selectedJD = useMemo(
     () => samples.find((sample) => sample.id === selectedId) ?? null,
@@ -234,7 +237,7 @@ export function MarketPage() {
   useEffect(() => {
     if (!drawerMode) return
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeDrawer()
+      if (event.key === 'Escape' && !(event.target instanceof Element && event.target.closest('dialog[open]'))) closeDrawer()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -246,8 +249,9 @@ export function MarketPage() {
     setSubmitting(true)
     setError('')
     try {
-      await jobPilotAPI.startJDImport(content)
+      const session = await jobPilotAPI.startJDImport(content)
       setNotice('材料已保存，正在识别岗位。发现多个岗位时会先让你选择。')
+      importFeedback.submitted(session)
       setRawJD('')
       closeDrawer()
 	  await loadJDs()
@@ -263,9 +267,10 @@ export function MarketPage() {
 		setSubmitting(true)
 		setError('')
 		try {
-			await jobPilotAPI.startJDImport(editRawJD, selectedJD.id)
+			const session = await jobPilotAPI.startJDImport(editRawJD, selectedJD.id)
 			closeDrawer()
 			setNotice('修改内容已保存，正在重新识别；原有结果会保留到确认新的岗位内容。')
+			importFeedback.submitted(session)
 			await loadJDs(false)
 		} catch (updateError) {
 			setError(updateError instanceof Error ? updateError.message : '更新 JD 失败')
@@ -305,8 +310,9 @@ export function MarketPage() {
     try {
       const current = allSamples.find(sample => sample.id === id)
       if (current && !current.analysis?.stages.length) {
-        await jobPilotAPI.startJDImport(current.rawText, id)
+        const session = await jobPilotAPI.startJDImport(current.rawText, id)
         setNotice('正在用新的流程识别原文；多个岗位会先让你选择。')
+        importFeedback.submitted(session)
         await loadJDs(false)
         return
       }
@@ -361,6 +367,8 @@ export function MarketPage() {
         </div>
       )}
       {error && <div className="market-error" role="alert"><AlertCircle size={17} /><span>{error}</span></div>}
+
+      {importFeedback.count > 0 && <JDImportEmptyNotice count={importFeedback.count} onDismiss={importFeedback.dismiss} onAdd={() => setDrawerMode('add')} />}
 
       {imports.map(session => <JDImportPanel key={session.id} session={session}
         onConfirm={async ids => { await jobPilotAPI.confirmJDImport(session.id, ids); setNotice('所选岗位已导入，正在分别提取内容并处理分类与能力。'); await loadJDs(false) }}

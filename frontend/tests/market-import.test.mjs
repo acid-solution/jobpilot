@@ -25,10 +25,9 @@ test('multiple jobs require an explicit selection with no default choices', () =
   assert.doesNotMatch(html, /checked=""/)
   assert.match(html, /disabled=""[^>]*>确认导入 0 份/)
 })
-test('non JD is a normal empty result without a failure retry action', () => {
+test('empty imports have no permanent result panel or failure retry action', () => {
   const html = renderToStaticMarkup(createElement(Panel, { session: { ...session, status: 'empty', candidates: [] }, ...props }))
-  assert.match(html, /未识别到有效 JD/)
-  assert.doesNotMatch(html, /重新识别|暂时失败|type="checkbox"/)
+  assert.equal(html, '')
 })
 test('replacement selection uses one radio choice and preserves original identity', () => {
   const html = renderToStaticMarkup(createElement(Panel, { session: { ...session, replacement_jd_id: 'old' }, ...props }))

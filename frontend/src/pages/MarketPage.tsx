@@ -662,10 +662,10 @@ export function MarketPage() {
               </div>
 			) : drawerMode === 'edit' && selectedJD ? (
 				<div className="drawer-body add-jd-form">
-					<div className="drawer-intro"><Pencil size={19} /><p>保存后会清除旧解析结果并重新分析，在新结果完成前这份 JD 不计入市场画像。</p></div>
-					<label htmlFor="edit-raw-jd">完整 JD 原文</label>
+					<div className="drawer-intro"><Pencil size={19} /><p>保存后先识别岗位；确认导入后更新原记录并重新分析，原记录编号会保留。</p></div>
+					<label htmlFor="edit-raw-jd">招聘材料</label>
 					<textarea id="edit-raw-jd" value={editRawJD} onChange={(event) => setEditRawJD(event.target.value)} autoFocus />
-					<p className="field-help">如果修改后的原文与当前目标下另一份 JD 完全相同，系统会拒绝保存。</p>
+					<p className="field-help">允许混有无关文字。多个岗位需要选择一份更新原记录；与已有 JD 重复时会显示对应记录。</p>
 					<div className="drawer-actions">
 						<button className="button" type="button" onClick={() => setDrawerMode('detail')}>取消</button>
 						<button className="button button-primary" type="button" onClick={() => void updateJD()} disabled={!editRawJD.trim() || editRawJD.trim() === selectedJD.rawText.trim() || submitting}>{submitting ? '保存中……' : '保存并重新分析'} <ArrowRight size={15} /></button>

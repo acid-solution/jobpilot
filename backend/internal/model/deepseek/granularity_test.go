@@ -1,6 +1,7 @@
 package deepseek
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/LeoninCS/jobpilot-next/backend/internal/jdanalysis"
@@ -43,6 +44,37 @@ func TestPreferenceMustHaveLocalSourceProof(t *testing.T) {
 		if _, ok := resolveAnchoredRequirement(doc, r); ok != tc.valid {
 			t.Errorf("preference scope %q %q valid=%v", tc.name, tc.proof, ok)
 		}
+	}
+}
+
+func TestPreferenceAllowsSourceLineWrappingAndTerminalPunctuation(t *testing.T) {
+	for _, raw := range []string{"了解UML者\n优先。", "了解UML者优先。", "Node.js开发经验者\r\n优先。"} {
+		doc := jdsource.New(raw)
+		refs := modelRefs{}
+		for _, b := range doc.Blocks {
+			refs = append(refs, b.ID)
+		}
+		name := "UML"
+		if strings.Contains(raw, "Node.js") {
+			name = "Node.js"
+		}
+		item := anchoredRequirement{Operator: jdanalysis.RequirementSingle, Count: 1, Kind: "preferred", KindEvidence: modelText(raw), Refs: refs, Options: []anchoredOption{{Name: modelText(name), Refs: refs}}}
+		got, ok := resolveAnchoredRequirement(doc, item)
+		if !ok || got.Evidence != raw || got.RequirementKind != "preferred" {
+			t.Errorf("formatting rejected a genuine clause or altered its quote: %q %#v", raw, got)
+		}
+	}
+}
+
+func TestFailedExtractionDoesNotReturnAnInvalidJDVerdict(t *testing.T) {
+	raw := "负责服务开发。\n熟悉Go、MySQL。"
+	doc := jdsource.New(raw)
+	client := stageTestClient(t, func(chatRequest) any {
+		return map[string]any{"is_jd": true, "responsibility_block_ids": []string{doc.Blocks[0].ID}, "ability_requirements": []any{map[string]any{"operator": "single", "required_count": 1, "block_ids": []string{doc.Blocks[1].ID}, "options": []any{map[string]any{"name": "Go、MySQL", "block_ids": []string{doc.Blocks[1].ID}}}}}}
+	})
+	got, err := client.ExtractJD(t.Context(), "test", "test", raw)
+	if err == nil || got.ValidationStatus == jdanalysis.ValidationInvalid || got.DocumentType == jdanalysis.DocumentNonJobDescription || got.ValidationReason != "" {
+		t.Fatalf("technical extraction error became a negative JD decision: %v %#v", err, got)
 	}
 }
 

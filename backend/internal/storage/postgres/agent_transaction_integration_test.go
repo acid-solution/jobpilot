@@ -26,7 +26,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-func agentTransactionDatabase(t *testing.T) *sql.DB {
+func agentTransactionDatabase(t *testing.T, version ...int64) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("JOBPILOT_ADMIN_DATABASE_URL")
 	if dsn == "" {
@@ -65,7 +65,12 @@ func agentTransactionDatabase(t *testing.T) *sql.DB {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.Up(db, "sql"); err != nil {
+	if len(version) > 0 {
+		err = goose.UpTo(db, "sql", version[0])
+	} else {
+		err = goose.Up(db, "sql")
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	return db

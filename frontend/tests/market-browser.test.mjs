@@ -584,3 +584,27 @@ test('an old successful JD can be reanalyzed without losing its previous confirm
     assert.equal(await detail.getByRole('button', { name: '按新规则重新分析' }).count(), 0)
   } finally { await context.close() }
 })
+
+test('failed reanalysis overrides a legacy invalid placeholder and labels preserved abilities honestly', { skip: !enabled, timeout: 30000 }, async () => {
+  const context = await browser.newContext()
+  try {
+    const page = await context.newPage()
+    const damaged = { ...completed, title: '未明确', validation_status: 'invalid', validation_reason: '未识别到有效岗位职责或招聘要求', job_status: 'failed', job_error_code: 'model_invalid_response', ability_review: { pending_count: 10, failed_count: 0 }, analysis: { ...completed.analysis, stages: [{ name: 'extraction', status: 'failed', error_code: 'model_invalid_response' }] } }
+    await page.route('**/api/v1/**', route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/v1/jds') return respond(route, [damaged])
+      if (path === '/api/v1/jd-imports') return respond(route, [])
+      if (path === '/api/v1/market-profile') return respond(route, profile(true))
+      throw new Error(`Unexpected API ${path}`)
+    })
+    await page.goto(baseURL)
+    await page.locator('.jd-row').click()
+    const detail = page.getByRole('dialog')
+    await detail.getByRole('button', { name: '重新分析', exact: true }).waitFor()
+    const text = await detail.innerText()
+    assert.match(text, /内容结构需要重试/)
+    assert.match(text, /以下为上次已确认的能力/)
+    assert.match(text, /这些是保留的待审核项/)
+    assert.doesNotMatch(text, /无法识别为岗位 JD|未识别到有效岗位职责或招聘要求|不进入能力归一化|已确认能力仍正常计入画像/)
+  } finally { await context.close() }
+})

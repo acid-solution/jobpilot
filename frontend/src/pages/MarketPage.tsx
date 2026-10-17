@@ -141,8 +141,8 @@ function analysisFailureCopy(code?: string) {
 function mapJD(item: JobDescription): JDSample {
 	const pollable = item.job_status === 'queued' || item.job_status === 'running'
 	const extracted = item.job_status === 'succeeded'
-	const invalid = item.validation_status === 'invalid'
-	const incomplete = item.validation_status === 'incomplete'
+	const invalid = extracted && item.validation_status === 'invalid'
+	const incomplete = extracted && item.validation_status === 'incomplete'
 	const technicalFailure = item.job_status === 'failed'
 	const failureCopy = analysisFailureCopy(item.job_error_code)
 	const displayStatus: JDStatus = technicalFailure
@@ -152,13 +152,15 @@ function mapJD(item: JobDescription): JDSample {
 	    : pollable
 	      ? 'processing'
 	      : item.status
-	const statusLabel = invalid
+	const statusLabel = technicalFailure
+	  ? failureCopy.label
+	  : pollable
+	    ? statusLabels.processing
+	    : invalid
 	  ? '无法识别为岗位 JD'
 	  : incomplete
 	    ? 'JD 信息不完整'
-	    : technicalFailure
-	      ? failureCopy.label
-	      : extracted && item.status === 'processing'
+	    : extracted && item.status === 'processing'
 	        ? '基础解析完成，等待分类'
 	        : statusLabels[displayStatus]
 	const waitingForClassification = extracted && item.validation_status === 'valid' && item.status === 'processing'
@@ -179,7 +181,7 @@ function mapJD(item: JobDescription): JDSample {
 		primaryCategory: invalid || incomplete ? '不进入分类' : item.primary_category || '等待分类',
 		secondaryCategory: invalid || incomplete ? '不进入能力归一化' : item.secondary_category || missingSecondaryCategory,
     updatedLabel: formatUpdatedLabel(item.updated_at),
-		reason: item.validation_reason || (technicalFailure ? failureCopy.reason : item.reason) || (pollable
+		reason: (technicalFailure ? failureCopy.reason : pollable ? 'JD 原文已经保存，正在处理本次分析；已有结果保留供参考。' : item.validation_reason || item.reason) || (pollable
 		  ? 'JD 原文已经保存，持久化分析任务正在等待处理。'
 		  : waitingForClassification
 		    ? '基础信息已经解析，等待岗位分类和能力归一化。'
@@ -579,6 +581,7 @@ export function MarketPage() {
                 </section>
                 <section>
                   <h3>提取的能力</h3>
+				  {selectedJD.jobStatus === 'failed' && selectedJD.abilities.length > 0 && <p className="detail-muted">以下为上次已确认的能力。本次重分析未完成，尚未替换旧结果。</p>}
 				  {selectedJD.analysis?.needs_reanalysis && <div className="detail-status-card"><AlertCircle size={17} /><div><strong>这份 JD 使用旧版能力提取规则</strong><p>可按新规则重新拆分和归一化。此操作会调用你的模型；上次已确认的能力会保留到新结果完成。</p><button className="button retry-button" type="button" onClick={() => void retryJD(selectedJD.id)}><RotateCcw size={15} />按新规则重新分析</button></div></div>}
                   {selectedJD.abilities.length > 0 ? <div className="ability-tags">{selectedJD.abilities.map((ability) => <span key={ability}>{ability}</span>)}</div> : <p className="detail-muted">处理完成后显示。</p>}
 				  {selectedJD.abilityLevels?.length ? <div className="jd-ability-level-list">{selectedJD.abilityLevels.map((item) => <article key={`${item.ability_id}-${item.requirement_kind}`}>
@@ -596,7 +599,7 @@ export function MarketPage() {
 				  {!selectedJD.abilityLevels?.length && selectedJD.abilityEvidence?.length ? <div className="ability-evidence-list">{selectedJD.abilityEvidence.map((item) => <p key={`${item.name}-${item.evidence}`}><strong>{item.name}</strong><span>{item.evidence}</span></p>)}</div> : null}
                 </section>
 				{(selectedJD.abilityReview?.pending_count ?? 0) > 0 && <section className="detail-status-card">
-					<Clock3 size={17} /><div><strong>{selectedJD.abilityReview?.pending_count} 项能力待目录审核</strong><p>{selectedJD.abilityReview?.blocked ? '平台审核配置完成并重启服务后会自动继续。已确认能力仍正常计入画像。' : selectedJD.abilityReview?.next_attempt_at && new Date(selectedJD.abilityReview.next_attempt_at).getTime() > Date.now() + 60_000 ? `预计 ${formatUpdatedLabel(selectedJD.abilityReview.next_attempt_at)} 恢复处理。已确认能力仍正常计入画像。` : '未确认候选不会展示或计入统计；已确认能力仍正常计入画像。'}</p></div>
+					<Clock3 size={17} /><div><strong>{selectedJD.abilityReview?.pending_count} 项能力待目录审核</strong><p>{selectedJD.jobStatus === 'failed' ? '这些是保留的待审核项，不代表本次重分析已成功。' : selectedJD.abilityReview?.blocked ? '平台审核配置完成并重启服务后会自动继续。已确认能力仍正常计入画像。' : selectedJD.abilityReview?.next_attempt_at && new Date(selectedJD.abilityReview.next_attempt_at).getTime() > Date.now() + 60_000 ? `预计 ${formatUpdatedLabel(selectedJD.abilityReview.next_attempt_at)} 恢复处理。已确认能力仍正常计入画像。` : '未确认候选不会展示或计入统计；已确认能力仍正常计入画像。'}</p></div>
 				</section>}
 				{(selectedJD.abilityReview?.failed_count ?? 0) > 0 && <section className="detail-status-card">
 					<AlertCircle size={17} /><div><strong>能力目录审核暂时失败</strong><p>JD 分析结果仍然保留，可以单独重新审核。</p><button className="button retry-button" type="button" onClick={() => void retryAbilityReviews(selectedJD.id)}><RotateCcw size={15} />重新审核</button></div>

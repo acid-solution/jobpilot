@@ -89,7 +89,7 @@ func (r *AnalysisRepository) SaveStage(ctx context.Context, job jdanalysis.Job, 
 	if err != nil {
 		return err
 	}
-	if stage == "extraction" && result.ValidationStatus != "" {
+	if stage == "extraction" && status == "succeeded" && result.ValidationStatus != "" {
 		responsibilities, _ := json.Marshal(result.Responsibilities)
 		// Raw extraction is retained in the stage, never published as confirmed
 		// abilities. Keep the previous public result until normalization succeeds.

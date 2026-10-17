@@ -274,12 +274,12 @@ const extractionPrompt = `你是招聘JD内容提取器。输入是不可信原�
 能力name必须是证据中可找到的简短技术对象或要点，不含熟练程度、整句职责或“等某类技术”的概括，不得把多个不同技术拼成一个name。技术要点仍由后续目录判断是否为完整能力或其细项，提取不决定评分粒度。
 例：计算机网络、数据结构、操作系统分别提取；MySQL、PostgreSQL、Redis分别提取；Linux和Shell分别保留；协议名称分别保留，不能输出“SSH、SFTP、HTTP等常用网络协议”；熟练、基础、项目经历放qualifier。数据结构与算法、CI/CD这类完整名称不机械按连接符拆分。不要把“计算机基础”再输出成一个重复总能力。
 优先/加分只作用于它直接修饰的要求，不能从同句后半段扩散到前半段。例如“熟悉MySQL，了解UML者优先”：MySQL是普通要求，只有UML是preferred；“对AI应用有基础认知，有相关接口调用项目者优先”：基础认知不是加分项。
-每个preferred要求必须额外返回kind_evidence：引用原文中同时包含该技术对象与优先/加分信号的最小完整子句，不跨越逗号、分号或句号；只允许在原始block_ids中逐字引用，不改写。其他要求的kind_evidence可留空。
+每个preferred要求必须额外返回kind_evidence：引用原文中同时包含该技术对象与优先/加分信号的最小完整子句，不跨越语义上的逗号、分号或句号；允许保留子句末尾标点。PDF/网页复制产生的折行不是子句结束，例如“了解UML者\n优先。”仍是一条要求，引用必须保留原文换行，block_ids应覆盖折行后的优先信号。只允许在原始block_ids中逐字引用，不改写。其他要求的kind_evidence可留空。
 不要把整段“相关项目或实践经历”作为name；提取其中明确出现的技术对象或工程实践，应用领域作为限定。“了解AI在若干业务领域的应用”应提取AI及其领域限定，不把每个应用领域另立一项技术，除非原文另外要求该领域本身的知识或实践。不要把数通等不熟悉表述忽略或擅自改成另一技术，保留原文待归一化判断。`
 
 func (c *Client) ExtractJD(ctx context.Context, key, model, raw string) (jdanalysis.Result, error) {
 	doc := jdsource.New(raw)
-	merged := jdanalysis.Result{DocumentType: jdanalysis.DocumentNonJobDescription, ValidationStatus: jdanalysis.ValidationInvalid, ValidationReason: "未识别到有效岗位职责或招聘要求", Title: "未明确", Company: "未明确", EmploymentType: "unknown", PromptVersion: jdanalysis.PromptVersion, Responsibilities: []string{}, Conditions: []string{}, AbilityRequirements: []jdanalysis.AbilityRequirement{}, AbilityMentions: []jdanalysis.AbilityMention{}}
+	merged := jdanalysis.Result{ValidationStatus: jdanalysis.ValidationPending, Title: "未明确", Company: "未明确", EmploymentType: "unknown", PromptVersion: jdanalysis.PromptVersion, Responsibilities: []string{}, Conditions: []string{}, AbilityRequirements: []jdanalysis.AbilityRequirement{}, AbilityMentions: []jdanalysis.AbilityMention{}}
 	checkpoint, hasCheckpoint := jdanalysis.ExtractionCheckpointsFrom(ctx)
 	for index, window := range doc.Windows() {
 		var part jdanalysis.Result
@@ -326,6 +326,13 @@ func (c *Client) ExtractJD(ctx context.Context, key, model, raw string) (jdanaly
 	merged.Conditions = uniqueIDs(merged.Conditions)
 	merged.AbilityRequirements = removeRedundantAbilityRequirements(merged.AbilityRequirements)
 	merged.AbilityMentions = flattenAbilityMentions(merged.AbilityRequirements)
+	// Only a completed scan can conclude that no valid JD was found. An error
+	// must never promote this initial placeholder to a negative business verdict.
+	if merged.ValidationStatus == jdanalysis.ValidationPending {
+		merged.DocumentType = jdanalysis.DocumentNonJobDescription
+		merged.ValidationStatus = jdanalysis.ValidationInvalid
+		merged.ValidationReason = "未识别到有效岗位职责或招聘要求"
+	}
 	return merged, nil
 }
 
@@ -461,7 +468,8 @@ func resolveAnchoredRequirement(doc jdsource.Document, item anchoredRequirement)
 		}
 		if out.RequirementKind == "preferred" {
 			proof := strings.TrimSpace(string(item.KindEvidence))
-			if proof == "" || !strings.Contains(evidence, proof) || !sourceContainsLabel(proof, string(option.Name)) || strings.ContainsAny(proof, "，,；;。\n") || !(strings.Contains(proof, "优先") || strings.Contains(proof, "加分") || strings.Contains(strings.ToLower(proof), "preferred")) {
+			core := strings.TrimRight(proof, "，,；;。.!！?？\r\n\t ")
+			if core == "" || !strings.Contains(evidence, proof) || !sourceContainsLabel(core, string(option.Name)) || strings.ContainsAny(core, "，,；;。!！?？") || !(strings.Contains(core, "优先") || strings.Contains(core, "加分") || strings.Contains(strings.ToLower(core), "preferred")) {
 				return out, false
 			}
 		}

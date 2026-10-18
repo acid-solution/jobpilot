@@ -65,6 +65,8 @@ CI 另外使用 `-race`，并执行 `go vet`；实际步骤以[工作流](../.gi
 ~~~powershell
 $env:RUN_MARKET_E2E='1'
 npm run test:e2e
+$env:RUN_ACCOUNT_E2E='1'
+node --test tests/account-browser.test.mjs
 ~~~
 
 需要已安装的 Chromium，或通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指向本机浏览器。CI 安装浏览器后显式启用。用例通过本地假接口模拟 Worker 和问答状态，不对生产页面或模型发请求。

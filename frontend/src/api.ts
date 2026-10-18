@@ -415,6 +415,7 @@ const AUTH_CLIENT_ID = 'jobpilot'
 let accessToken = ''
 let refreshPromise: Promise<AuthSession> | null = null
 let authFailureHandler: (() => void) | null = null
+let authGeneration = 0
 
 async function parseResponse<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({})) as DataResponse<T> & ErrorResponse & T
@@ -443,10 +444,12 @@ async function authRequest<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function refreshSession(): Promise<AuthSession> {
   if (!refreshPromise) {
+    const generation = authGeneration
     refreshPromise = authRequest<AuthSession>('/auth/v1/token/refresh', {
       method: 'POST',
       body: JSON.stringify({ client_id: AUTH_CLIENT_ID }),
     }).then((session) => {
+      if (generation !== authGeneration) throw new APIError(401, 'session_changed', '登录状态已变更，请重新登录')
       accessToken = session.access_token
       return session
     }).finally(() => {
@@ -500,6 +503,7 @@ export const authAPI = {
   }),
   refresh: refreshSession,
   logout: async () => {
+    authGeneration++
     try {
       await authRequest<void>('/auth/v1/logout', {
         method: 'POST',
@@ -508,6 +512,30 @@ export const authAPI = {
     } finally {
       accessToken = ''
     }
+  },
+  deleteAccount: async (currentPassword: string) => {
+    if (refreshPromise) await refreshPromise
+    const remove = () => authRequest<void>('/auth/v1/me', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ current_password: currentPassword }),
+    })
+    try {
+      await remove()
+    } catch (error) {
+      // A wrong password also returns 401; only an expired login may be refreshed.
+      if (!(error instanceof APIError) || error.status !== 401 || error.code !== 'unauthorized') throw error
+      try {
+        await refreshSession()
+      } catch (refreshError) {
+        accessToken = ''
+        authFailureHandler?.()
+        throw refreshError
+      }
+      await remove()
+    }
+    authGeneration++
+    accessToken = ''
   },
   resetPassword: async (challengeId: string, code: string, newPassword: string) => {
     await authRequest<void>('/auth/v1/password/reset', {

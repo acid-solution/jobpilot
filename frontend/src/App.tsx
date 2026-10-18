@@ -401,7 +401,7 @@ function WorkspaceApp({ session, onSignedOut }: { session: AuthSession; onSigned
         ) : currentPage === 'learning' ? (
           <div className="page-content"><h1>学习路线</h1><p className="page-description">完成两类画像并选择项目后，规划项目实践与知识准备两份并行计划。</p><LearningRoutePanel key={`${target ? `${target.id}:${target.updated_at}` : 'no-target'}:${agentRefresh}`} onOpenMarket={() => setCurrentPage('market')} onOpenProfile={() => setCurrentPage('profile')} onOpenProjects={() => setCurrentPage('projects')} onOpenTarget={() => setTargetDialogOpen(true)} /></div>
         ) : (
-          <SettingsPage key={agentRefresh} />
+          <SettingsPage key={agentRefresh} email={email} onDeleted={onSignedOut} />
         )}
       </main>
 

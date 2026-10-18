@@ -1899,6 +1899,16 @@ textarea:focus-visible {
   gap: 6px;
 }
 
+.account-deletion-body { padding: 20px; }
+.account-deletion-body h3 { margin: 0 0 12px; font-size: 15px; }
+.account-deletion-body > p { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.account-deletion-form { display: grid; gap: 12px; margin-top: 18px; max-width: 620px; font-size: 13px; }
+.account-deletion-form > input { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; color: var(--text); background: var(--surface-alt); font: inherit; }
+.account-deletion-check { display: flex; align-items: flex-start; gap: 9px; line-height: 1.7; }
+.account-deletion-check input { flex: none; margin-top: 5px; }
+.account-deletion-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.account-deletion-form .settings-error { margin: 0; }
+
 .spin {
   animation: spin 900ms linear infinite;
 }

@@ -2,22 +2,24 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, KeyRound, LoaderCircle, ShieldCheck, Trash2 } from 'lucide-react'
 import { jobPilotAPI, type ModelConfig } from '../api'
 import { ModelUsagePanel } from './ModelUsagePanel'
+import { AccountSettings } from './AccountSettings'
 
-export function SettingsPage() {
-  const [tab, setTab] = useState<'config' | 'usage'>('config')
+export function SettingsPage({ email, onDeleted }: { email: string; onDeleted: () => void }) {
+  const [tab, setTab] = useState<'config' | 'usage' | 'account'>('config')
   return (
     <div className="page-content settings-page">
       <div className="page-heading-row">
         <div>
           <h1>设置</h1>
-          <p className="page-description">配置模型服务，查看调用用量与估算费用。</p>
+          <p className="page-description">配置模型服务，查看用量与费用，管理共享账号。</p>
         </div>
       </div>
       <div className="market-tabs" role="tablist" aria-label="设置页面">
         <button type="button" role="tab" aria-selected={tab === 'config'} className={tab === 'config' ? 'is-current' : ''} onClick={() => setTab('config')}>模型配置</button>
         <button type="button" role="tab" aria-selected={tab === 'usage'} className={tab === 'usage' ? 'is-current' : ''} onClick={() => setTab('usage')}>模型用量</button>
+        <button type="button" role="tab" aria-selected={tab === 'account'} className={tab === 'account' ? 'is-current' : ''} onClick={() => setTab('account')}>账号安全</button>
       </div>
-      {tab === 'config' ? <ModelSettings /> : <ModelUsagePanel />}
+      {tab === 'config' ? <ModelSettings /> : tab === 'usage' ? <ModelUsagePanel /> : <AccountSettings email={email} onDeleted={onDeleted} />}
     </div>
   )
 }

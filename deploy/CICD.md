@@ -11,7 +11,9 @@ push、PR、手动触发均执行 CI，第三方 Action 固定提交。JobPilot 
 3. 无网络容器中的部署脚本替身测试，检查生成、备份失败、发布失败与服务器锁。
 4. 构建 linux/amd64 镜像。只有受信任 main 发布到 GHCR，PR 不读取 SSH 凭据、不发布或连接服务器。
 
-认证依赖固定源码提交 `246e0a27fb90401dd58817339b4df4d868d31b2b` 并发布为 `jobpilot-auth`。首次部署固定 digest，日常单应用发布不替换认证。
+认证依赖固定源码提交 `4b816edf007c14cc4ea0e010eb66daa532900f95` 并发布为 `jobpilot-auth`，包含账号注销的跨域 DELETE 修复。首次部署固定 digest，日常单应用发布不替换认证。
+
+既有环境如需跨域调用注销接口，应单独升级认证镜像：在 `.env.images` 中将 `SHARED_AUTH_IMAGE` 改为本次 CI 输出的认证不可变引用，校验 Compose 配置后按环境对应的 Compose 文件组合执行 `up -d --no-build --wait auth`。应用发布不会自动执行这一步。
 
 工作流摘要记录不可变镜像引用，不使用 latest 作为发布依据。
 

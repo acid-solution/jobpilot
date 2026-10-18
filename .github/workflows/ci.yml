@@ -70,6 +70,10 @@ jobs:
         run: npm run test:e2e
         env:
           RUN_MARKET_E2E: '1'
+      - name: Verify shared account deletion in a headless browser
+        run: node --test tests/account-browser.test.mjs
+        env:
+          RUN_ACCOUNT_E2E: '1'
       - run: npm run typecheck
       - run: npm run build
 
@@ -127,7 +131,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: acid-solution/shared-auth
-          ref: 246e0a27fb90401dd58817339b4df4d868d31b2b
+          ref: 4b816edf007c14cc4ea0e010eb66daa532900f95
           path: .auth-source
           persist-credentials: false
       - name: Publish pinned authentication dependency
@@ -138,10 +142,10 @@ jobs:
           context: .auth-source
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/acid-solution/jobpilot-auth:246e0a27fb90401dd58817339b4df4d868d31b2b
+          tags: ghcr.io/acid-solution/jobpilot-auth:4b816edf007c14cc4ea0e010eb66daa532900f95
           labels: |
             org.opencontainers.image.source=https://github.com/acid-solution/jobpilot
-            org.opencontainers.image.revision=246e0a27fb90401dd58817339b4df4d868d31b2b
+            org.opencontainers.image.revision=4b816edf007c14cc4ea0e010eb66daa532900f95
           cache-from: type=gha,scope=shared-auth
           cache-to: type=gha,mode=max,scope=shared-auth
       - name: Record immutable image references

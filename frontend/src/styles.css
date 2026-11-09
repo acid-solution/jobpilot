@@ -18,6 +18,7 @@
   --danger: light-dark(#b33a3a, #f28c8c);
   --danger-soft: light-dark(#fff0f0, #3e2428);
   --shadow: light-dark(rgb(28 39 60 / 18%), rgb(0 0 0 / 48%));
+  --site-footer-height: 40px;
 }
 
 * {
@@ -35,6 +36,23 @@ body,
 body {
   min-height: 100vh;
   background: var(--canvas);
+}
+
+.site-footer {
+  display: grid;
+  min-height: var(--site-footer-height);
+  place-items: center;
+  padding: 8px 16px;
+  color: var(--muted);
+  background: var(--canvas);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.site-footer a {
+  color: inherit;
+  text-underline-offset: 0.2em;
 }
 
 button,
@@ -4342,7 +4360,7 @@ textarea:focus-visible {
 
 .auth-loading {
   display: flex;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--site-footer-height));
   align-items: center;
   justify-content: center;
   gap: 12px;
@@ -4353,14 +4371,13 @@ textarea:focus-visible {
 
 .auth-page {
   display: grid;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--site-footer-height));
   grid-template-columns: minmax(360px, 46%) minmax(440px, 54%);
   background: var(--surface);
 }
 
 .auth-intro {
   display: flex;
-  min-height: 100vh;
   flex-direction: column;
   padding: 42px clamp(36px, 6vw, 88px);
   border-right: 1px solid var(--border);
@@ -4419,7 +4436,6 @@ textarea:focus-visible {
 
 .auth-panel {
   display: grid;
-  min-height: 100vh;
   place-items: center;
   padding: 40px;
   background: var(--surface);
@@ -4565,10 +4581,10 @@ textarea:focus-visible {
 @media (max-width: 760px) {
   .auth-page {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .auth-intro {
-    min-height: auto;
     padding: 24px;
   }
 
@@ -4578,7 +4594,6 @@ textarea:focus-visible {
   }
 
   .auth-panel {
-    min-height: calc(100vh - 79px);
     padding: 30px 22px;
   }
 
